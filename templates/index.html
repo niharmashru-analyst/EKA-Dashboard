@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>SKU Stock Analytics</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/dashboard.css?v=4">
+</head>
+<body>
+<div class="app-shell">
+<aside class="sidebar">
+  <div class="brand"><div class="brand-mark">S</div><div><div class="brand-name">SKU<span>•</span>360</div><div class="brand-sub">STOCK ANALYTICS</div></div></div>
+  <nav>
+    <button class="nav active" data-page="overview">⌂ <span>Overview</span></button>
+    <button class="nav" data-page="products">▦ <span>SKU Explorer</span></button>
+    <button class="nav" data-page="stores">▤ <span>Store Analysis</span></button>
+    <button class="nav" data-page="table">☷ <span>Data Table</span></button>
+  </nav>
+  <div class="side-note"><b>Live Excel</b><br>Dashboard reads your linked workbook. Refresh whenever the source changes.</div>
+</aside>
+<main>
+<header class="topbar">
+  <div><div class="eyebrow">ANALYTICS DASHBOARD</div><h1 id="pageTitle">SKU Stock Overview</h1></div>
+  <div class="actions"><span id="sourceBadge" class="badge">Loading…</span><button id="refresh" class="btn">↻ Refresh Excel</button></div>
+</header>
+<section id="filterBar"></section>
+<section id="app" class="content"></section>
+</main>
+</div>
+<div id="modalOverlay" class="modal-overlay">
+  <div class="modal">
+    <div class="modal-head">
+      <div><h3 id="modalTitle"></h3><div id="modalSub" class="modal-sub"></div></div>
+      <button id="modalClose" class="modal-close" aria-label="Close">✕</button>
+    </div>
+    <div id="modalBody" class="modal-body"></div>
+  </div>
+</div>
+<script src="/static/echarts.min.js"></script>
+<script src="/static/app.js?v=4"></script>
+</body></html>
