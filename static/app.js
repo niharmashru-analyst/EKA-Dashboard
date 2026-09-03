@@ -263,18 +263,18 @@ function overview(){
  // same information, actually legible.
  const byp={};d.forEach(r=>{const p=r.Pareto||"Unclassified";(byp[p]??={stock:0,avg:0});byp[p].stock+=+r.Stock||0;byp[p].avg+=+r["L3M Avg Qty"]||0});
  const order=Object.keys(byp).sort((a,b)=>paretoOrder(a)-paretoOrder(b));
- chart("paretoBar",{...base,legend:{top:0,textStyle:{color:"#3E3E3C"}},grid:{left:20,right:20,top:40,bottom:10,containLabel:true},xAxis:{type:"category",data:order,axisLine,axisLabel:{...axisLabel,interval:0,rotate:order.length>5?20:0}},yAxis:{type:"value",axisLine,axisLabel,splitLine},series:[
+ chart("paretoBar",{...base,tooltip:{...base.tooltip,trigger:"axis",formatter:p=>{const rows=p.map(it=>`${esc(it.marker)}${esc(it.seriesName)}: ${num(it.value)}`).join("<br>");return `${esc(p[0]?.name||"")}<br>${rows}`}},legend:{top:0,textStyle:{color:"#3E3E3C"}},grid:{left:20,right:20,top:40,bottom:10,containLabel:true},xAxis:{type:"category",data:order,axisLine,axisLabel:{...axisLabel,interval:0,rotate:order.length>5?20:0}},yAxis:{type:"value",axisLine,axisLabel:{...axisLabel,hideOverlap:true},splitLine},series:[
   {name:"Stock",type:"bar",data:order.map(k=>byp[k].stock),itemStyle:{color:PALETTE[0]}},
   {name:"L3M Avg Qty",type:"bar",data:order.map(k=>byp[k].avg),itemStyle:{color:PALETTE[1]}}
  ]});
 
  const skuMap={};d.forEach(r=>{const k=r["Product Name"]||r["EAN Code"];skuMap[k]=(skuMap[k]||0)+Number(r["Total MRP Value"]||0)});
  const top=Object.entries(skuMap).sort((a,b)=>b[1]-a[1]).slice(0,10).reverse();
- chart("topSku",{...base,grid:{left:20,right:75,top:10,bottom:10,containLabel:true},xAxis:{type:"value",axisLine,axisLabel:{...axisLabel,formatter:v=>moneyL(v)},splitLine},yAxis:{type:"category",data:top.map(x=>x[0]),axisLine,axisLabel:{...axisLabel,fontSize:11}},series:[{type:"bar",data:top.map(x=>x[1]),itemStyle:{color:PALETTE[0]},label:{show:true,position:"right",formatter:p=>moneyL(p.value),color:"#3E3E3C",fontSize:11}}]});
+ chart("topSku",{...base,tooltip:{...base.tooltip,formatter:p=>{const it=Array.isArray(p)?p[0]:p;return `${esc(it.name)}<br>${moneyL(it.value)}`}},grid:{left:20,right:75,top:10,bottom:10,containLabel:true},xAxis:{type:"value",axisLine,splitNumber:4,axisLabel:{...axisLabel,formatter:v=>moneyL(v),hideOverlap:true},splitLine},yAxis:{type:"category",data:top.map(x=>x[0]),axisLine,axisLabel:{...axisLabel,fontSize:11}},series:[{type:"bar",data:top.map(x=>x[1]),itemStyle:{color:PALETTE[0]},label:{show:true,position:"right",formatter:p=>moneyL(p.value),color:"#3E3E3C",fontSize:11}}]});
 
  const sm={};d.forEach(r=>{const k=r["Store Name"]||"Unknown";sm[k]=(sm[k]||0)+Number(r.Stock||0)});
  let st=Object.entries(sm).sort((a,b)=>b[1]-a[1]).slice(0,12).reverse();
- chart("storeChart",{...base,grid:{left:20,right:60,top:10,bottom:10,containLabel:true},xAxis:{type:"value",axisLine,axisLabel,splitLine},yAxis:{type:"category",data:st.map(x=>x[0]),axisLine,axisLabel:{...axisLabel,fontSize:11}},series:[{type:"bar",data:st.map(x=>x[1]),itemStyle:{color:PALETTE[1]},label:{show:true,position:"right",formatter:p=>num(p.value),color:"#3E3E3C",fontSize:11}}]});
+ chart("storeChart",{...base,tooltip:{...base.tooltip,formatter:p=>{const it=Array.isArray(p)?p[0]:p;return `${esc(it.name)}<br>${num(it.value)} units`}},grid:{left:20,right:60,top:10,bottom:10,containLabel:true},xAxis:{type:"value",axisLine,splitNumber:4,axisLabel:{...axisLabel,formatter:v=>num(v),hideOverlap:true},splitLine},yAxis:{type:"category",data:st.map(x=>x[0]),axisLine,axisLabel:{...axisLabel,fontSize:11}},series:[{type:"bar",data:st.map(x=>x[1]),itemStyle:{color:PALETTE[1]},label:{show:true,position:"right",formatter:p=>num(p.value),color:"#3E3E3C",fontSize:11}}]});
 }
 
 function products(){

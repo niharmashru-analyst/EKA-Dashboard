@@ -38,7 +38,13 @@ main{margin-left:230px;width:calc(100% - 230px);padding:28px 34px 45px}
 .filter-head{display:flex;justify-content:space-between;margin-bottom:11px;color:var(--text)}
 .link{background:none;border:0;color:var(--accent);cursor:pointer;font-weight:600}
 .filter-grid{display:grid;grid-template-columns:1fr 1.3fr .8fr 1fr 1.3fr;gap:10px}
-.filter label{display:block;color:var(--muted);font-size:10px;margin:0 0 5px;text-transform:uppercase;letter-spacing:.7px;font-weight:700}
+/* Direct-child combinator so this only styles the top-level "TYPE" /
+   "STORE NAME" captions — NOT the nested <label class="multi-option">
+   checkbox rows inside the dropdown, which need their own flex layout
+   (a plain ".filter label" descendant selector was outranking
+   ".multi-option" on specificity and forcing those rows to stack the
+   checkbox above the text instead of sitting inline). */
+.filter>label{display:block;color:var(--muted);font-size:10px;margin:0 0 5px;text-transform:uppercase;letter-spacing:.7px;font-weight:700}
 .filter select,.filter input{width:100%;height:38px;background:var(--panel);border:1px solid var(--line);color:var(--text2);border-radius:7px;padding:8px}
 .filter select:hover,.filter input:hover{border-color:var(--accent)}
 .filter select{min-height:38px}
