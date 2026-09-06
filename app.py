@@ -108,7 +108,8 @@ def clean_stock(df):
     df["Forecast Months"] = df["Pareto"].map({"Top 10":2.0,"Top 25":1.5,"Others":1.0}).fillna(1.0)
     df["Forecast Qty"] = df["L3M Avg Qty"] * df["Forecast Months"]
     # NOD is always calculated from current stock and L3M average sales; never use average NOD.
-    df["NOD"] = df.apply(lambda r: (float(r["Stock"])*31.0/float(r["L3M Avg Qty"])) if float(r["L3M Avg Qty"])>0 else 0, axis=1)
+    # Vectorized calculation keeps refreshes fast even as the workbook grows.
+    df["NOD"] = (df["Stock"] * 31.0).div(df["L3M Avg Qty"].replace(0, pd.NA)).fillna(0)
     if "Ideal Stock" not in df.columns: df["Ideal Stock"] = df["Forecast Qty"]
     else: df["Ideal Stock"] = pd.to_numeric(df["Ideal Stock"], errors="coerce").fillna(df["Forecast Qty"])
     if "Status" not in df.columns: df["Status"] = ""
@@ -171,6 +172,87 @@ def load_entry_sources(force=False):
             master=clean_master(pd.read_excel(path,sheet_name="SKU_Master")) if os.path.exists(path) and "SKU_Master" in pd.ExcelFile(path).sheet_names else pd.DataFrame(columns=MASTER_REQUIRED)
         _cache["map_df"]=mp; _cache["master_df"]=master; _cache["map_ts"]=now; _cache["master_ts"]=now
     return _cache["map_df"].copy(), _cache["master_df"].copy()
+
+
+def load_submissions_live():
+    try:
+        if SUBMISSION_API_URL:
+            result = remote_request("GET") or {}
+            if not result.get("ok"): return pd.DataFrame()
+            return pd.DataFrame(result.get("records", []))
+        return load_local_submissions()
+    except Exception:
+        return pd.DataFrame()
+
+def merge_variance_actuals(var, stock):
+    """Attach latest field-staff physical counts to the variance dataset.
+    System Stock Qty is always the current Stock_Data Stock when available.
+    Actual Value is derived from the current SKU's MRP/unit.
+    """
+    out = var.copy()
+    if out.empty:
+        return out
+    subs = load_submissions_live()
+    latest = {}
+    if not subs.empty:
+        for _, s in subs.iterrows():
+            k = f"{str(s.get('store_name','')).strip()}|{str(s.get('ean_code','')).strip()}"
+            ts = str(s.get('submitted_at',''))
+            if k and (k not in latest or ts >= str(latest[k].get('submitted_at',''))):
+                latest[k] = s.to_dict()
+    stock_map = {}
+    for _, r in stock.iterrows():
+        k = f"{str(r.get('Store Name','')).strip()}|{str(r.get('EAN Code','')).strip()}"
+        stock_map[k] = r.to_dict()
+    actual_q=[]; actual_v=[]; system_q=[]; system_unit_mrp=[]; diff_q=[]; diff_v=[]; live=[]
+    for _, r in out.iterrows():
+        k=f"{str(r.get('Store Name','')).strip()}|{str(r.get('EAN Code','')).strip()}"
+        sr=stock_map.get(k, {})
+        s=latest.get(k)
+        sq=float(sr.get('Stock', r.get('Closing Stock Qty',0)) or 0)
+        cm=float(sr.get('Total MRP Value',0) or 0)
+        cs=float(sr.get('Stock',0) or 0)
+        unit_mrp=cm/cs if cs>0 else (float(r.get('Closing Stock Value',0) or 0)/float(r.get('Closing Stock Qty',0) or 1) if float(r.get('Closing Stock Qty',0) or 0)>0 else 0)
+        aq=float(s.get('total',0) or 0) if s else None
+        av=aq*unit_mrp if aq is not None else None
+        actual_q.append(aq); actual_v.append(av); system_q.append(sq); system_unit_mrp.append(unit_mrp)
+        diff_q.append((aq-sq) if aq is not None else 0)
+        diff_v.append((av-sq*unit_mrp) if aq is not None else 0)
+        live.append(bool(s))
+    out['System Stock Qty']=system_q
+    out['System Stock Unit MRP']=system_unit_mrp
+    out['Actual Closing Qty']=actual_q
+    out['Actual Closing Value']=actual_v
+    out['Difference Qty']=diff_q
+    out['Difference Value']=diff_v
+    out['Live Submission']=live
+    # Keep submissions for SKUs that exist in the current Stock_Data but are absent
+    # from the movement workbook; they must still be visible to the user.
+    existing={f"{str(r.get('Store Name','')).strip()}|{str(r.get('EAN Code','')).strip()}" for _,r in out.iterrows()}
+    extras=[]
+    for k,s in latest.items():
+        if k in existing: continue
+        sr=stock_map.get(k,{})
+        aq=float(s.get('total',0) or 0)
+        sq=float(sr.get('Stock',0) or 0)
+        cs=float(sr.get('Stock',0) or 0)
+        cm=float(sr.get('Total MRP Value',0) or 0)
+        unit_mrp=cm/cs if cs>0 else 0
+        extras.append({
+            'Store Name':s.get('store_name',''),'EAN Code':s.get('ean_code',''),
+            'Product Name':s.get('product_name') or sr.get('Product Name',''),
+            'Opening Stock Qty':0,'Inward Qty':0,'Tertiary Qty':0,'Closing Stock Qty':0,
+            'Opening Stock Value':0,'Inward Value':0,'Tertiary Value':0,'Closing Stock Value':0,
+            'Calculated Closing Qty':0,'Calculated Closing Value':0,'Movement Check':False,
+            'Movement Check Qty':False,'Movement Check Value':False,
+            'System Stock Qty':sq,'System Stock Unit MRP':unit_mrp,
+            'Actual Closing Qty':aq,'Actual Closing Value':aq*unit_mrp,
+            'Difference Qty':aq-sq,'Difference Value':(aq-sq)*unit_mrp,
+            'Live Submission':True
+        })
+    if extras:
+        out=pd.concat([out,pd.DataFrame(extras)],ignore_index=True,sort=False)
+    return out
 
 
 def load_variance(force=False):
@@ -240,7 +322,9 @@ def api_data():
 def api_variance():
     try:
         var=load_variance(request.args.get("refresh")=="1")
-        resp=jsonify({"ok":True,"source":_cache["var_source"],"rows":len(var),"columns":list(var.columns),"records":json_records(var)})
+        stock=load_stock(request.args.get("refresh")=="1")
+        merged=merge_variance_actuals(var,stock)
+        resp=jsonify({"ok":True,"source":_cache["var_source"],"rows":len(merged),"columns":list(merged.columns),"records":json_records(merged)})
         resp.headers["Cache-Control"]="no-store, no-cache, must-revalidate, max-age=0"
         resp.headers["Pragma"]="no-cache"
         return resp
@@ -313,10 +397,11 @@ def export():
 @app.get("/api/variance-export")
 def variance_export():
     try:
-        df=load_variance(False)
+        df=merge_variance_actuals(load_variance(False), load_stock(False))
         if request.args.get("store"): df=df[df["Store Name"]==request.args.get("store")]
         if request.args.get("sku"):
             q=request.args.get("sku").lower(); df=df[df["EAN Code"].str.lower().str.contains(q,na=False) | df["Product Name"].str.lower().str.contains(q,na=False)]
-        if request.args.get("issues")=="1": df=df[~df["Movement Check"]]
+        if request.args.get("issues")=="1":
+            df=df[(~df["Movement Check"]) | (df["Live Submission"] & (df["Difference Qty"].abs()>0))]
         return Response(df.to_csv(index=False),mimetype="text/csv",headers={"Content-Disposition":"attachment; filename=variance_analysis.csv"})
     except Exception as e: return jsonify({"ok":False,"error":str(e)}),500
