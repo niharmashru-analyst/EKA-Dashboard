@@ -36,6 +36,7 @@ SUBMISSION_API_SECRET = os.getenv("SUBMISSION_API_SECRET", "").strip()
 DATABASE_PATH = os.getenv("DATABASE_PATH", os.path.join(app.root_path, "data", "submissions.db"))
 
 STOCK_REQUIRED = ["Type","Store Name","EAN Code","Product Name","Pareto","Stock","Total MRP Value","L3M Avg Qty","L3M Avg Value","NOD"]
+STOCK_OPTIONAL_METRICS = ["LY Qty","LY Value","Current Month Qty","Current Month Value"]
 VAR_REQUIRED = ["Store Name","EAN Code","Product Name","Opening Stock Qty","Inward Qty","Tertiary Qty","Closing Stock Qty","Opening Stock Value","Inward Value","Tertiary Value","Closing Stock Value"]
 MAP_REQUIRED = ["Email ID","Store Name"]
 MASTER_REQUIRED = ["EAN Code","Product Name"]
@@ -96,9 +97,18 @@ def clean_stock(df):
     missing = [c for c in STOCK_REQUIRED if c not in df.columns]
     if missing: raise RuntimeError("Stock_Data missing required columns: " + ", ".join(missing))
     for c in ["Stock","Total MRP Value","L3M Avg Qty","L3M Avg Value","NOD"]: df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+    # New Overview metrics. Keep legacy LY as a fallback for LY Qty so older files remain readable.
+    if "LY Qty" not in df.columns:
+        df["LY Qty"] = df["LY"] if "LY" in df.columns else 0
+    if "LY Value" not in df.columns: df["LY Value"] = 0
+    if "Current Month Qty" not in df.columns: df["Current Month Qty"] = 0
+    if "Current Month Value" not in df.columns: df["Current Month Value"] = 0
+    for c in STOCK_OPTIONAL_METRICS: df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
     for c in ["Type","Store Name","EAN Code","Product Name","Pareto"]: df[c] = df[c].fillna("").astype(str).str.strip()
     df["Forecast Months"] = df["Pareto"].map({"Top 10":2.0,"Top 25":1.5,"Others":1.0}).fillna(1.0)
     df["Forecast Qty"] = df["L3M Avg Qty"] * df["Forecast Months"]
+    # NOD is always calculated from current stock and L3M average sales; never use average NOD.
+    df["NOD"] = df.apply(lambda r: (float(r["Stock"])*31.0/float(r["L3M Avg Qty"])) if float(r["L3M Avg Qty"])>0 else 0, axis=1)
     if "Ideal Stock" not in df.columns: df["Ideal Stock"] = df["Forecast Qty"]
     else: df["Ideal Stock"] = pd.to_numeric(df["Ideal Stock"], errors="coerce").fillna(df["Forecast Qty"])
     if "Status" not in df.columns: df["Status"] = ""
@@ -220,14 +230,20 @@ def entry(): return render_template("entry.html")
 def api_data():
     try:
         stock=load_stock(request.args.get("refresh")=="1")
-        return jsonify({"ok":True,"source":_cache["stock_source"],"rows":len(stock),"columns":list(stock.columns),"records":json_records(stock)})
+        resp=jsonify({"ok":True,"source":_cache["stock_source"],"rows":len(stock),"columns":list(stock.columns),"records":json_records(stock)})
+        resp.headers["Cache-Control"]="no-store, no-cache, must-revalidate, max-age=0"
+        resp.headers["Pragma"]="no-cache"
+        return resp
     except Exception as e: return jsonify({"ok":False,"error":str(e)}),500
 
 @app.get("/api/variance")
 def api_variance():
     try:
         var=load_variance(request.args.get("refresh")=="1")
-        return jsonify({"ok":True,"source":_cache["var_source"],"rows":len(var),"columns":list(var.columns),"records":json_records(var)})
+        resp=jsonify({"ok":True,"source":_cache["var_source"],"rows":len(var),"columns":list(var.columns),"records":json_records(var)})
+        resp.headers["Cache-Control"]="no-store, no-cache, must-revalidate, max-age=0"
+        resp.headers["Pragma"]="no-cache"
+        return resp
     except Exception as e: return jsonify({"ok":False,"error":str(e)}),500
 
 @app.get("/api/entry-meta")
@@ -249,17 +265,32 @@ def submit():
         mp,master=load_entry_sources(False)
         allowed=set(mp.loc[mp["Email ID"]==email,"Store Name"])
         if store not in allowed: return jsonify({"ok":False,"error":"This email is not mapped to the selected shop."}),403
-        master_map={str(x["EAN Code"]):x["Product Name"] for _,x in master.iterrows()}; cleaned=[]
+        stock=load_stock(False)
+        master_map={str(x["EAN Code"]).strip():str(x["Product Name"]) for _,x in master.iterrows()}
+        # Current-store SKUs are valid even if the master file is temporarily missing one.
+        store_rows=stock[stock["Store Name"].astype(str).str.strip()==store][["EAN Code","Product Name"]].drop_duplicates()
+        store_map={str(x["EAN Code"]).strip():str(x["Product Name"]) for _,x in store_rows.iterrows()}
+        cleaned=[]
         for r in rows:
-            ean=str(r.get("EAN Code","")).strip()
-            if not ean or ean not in master_map: continue
-            stock=float(r.get("Stock",0) or 0); tester=float(r.get("Tester",0) or 0)
-            cleaned.append({"EAN Code":ean,"Product Name":master_map[ean],"Stock":stock,"Tester":tester,"Total":stock+tester})
+            ean=str(r.get("EAN Code","" )).strip()
+            if not ean: continue
+            product_name=master_map.get(ean) or store_map.get(ean) or str(r.get("Product Name","" )).strip()
+            if not product_name: continue
+            stock_qty=max(0.0,float(r.get("Stock",0) or 0))
+            tester_qty=max(0.0,float(r.get("Tester",0) or 0))
+            cleaned.append({"EAN Code":ean,"Product Name":product_name,"Stock":stock_qty,"Tester":tester_qty,"Total":stock_qty+tester_qty})
         if not cleaned: return jsonify({"ok":False,"error":"No valid SKU rows submitted."}),400
         payload={"email":email,"store_name":store,"rows":cleaned}
         if SUBMISSION_API_URL:
-            result=remote_request("POST",payload) or {}; return jsonify({"ok":True,"message":"Stock submitted successfully.","saved_rows":len(cleaned),"remote":result})
-        return jsonify({"ok":True,"message":"Stock submitted successfully.","saved_rows":save_local_submission(payload)})
+            result=remote_request("POST",payload) or {}
+            if not result.get("ok"):
+                return jsonify({"ok":False,"error":result.get("error","Google Apps Script rejected the submission."),"remote":result}),502
+            saved=int(result.get("saved_rows",len(cleaned)) or 0)
+            if saved != len(cleaned):
+                return jsonify({"ok":False,"error":f"Submission mismatch: sent {len(cleaned)} rows but Apps Script saved {saved}.","remote":result}),502
+            return jsonify({"ok":True,"message":"Stock submitted successfully.","saved_rows":saved,"remote":result})
+        saved=save_local_submission(payload)
+        return jsonify({"ok":True,"message":"Stock submitted successfully.","saved_rows":saved})
     except Exception as e: return jsonify({"ok":False,"error":str(e)}),500
 
 @app.get("/api/submissions")

@@ -36,3 +36,23 @@ main{background:var(--bg)}.eyebrow{color:#2563EB}.topbar h1{font-size:28px;lette
 @media(max-width:1250px){.kpis-6{grid-template-columns:repeat(3,1fr)}.kpis-5{grid-template-columns:repeat(3,1fr)}}
 @media(max-width:900px){.kpis-4,.kpis-5,.kpis-6{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:700px){.sidebar{position:static;background:#0F172A}.kpis-4,.kpis-5,.kpis-6{grid-template-columns:1fr 1fr}.column-picker{position:fixed;left:15px;right:15px;top:80px;width:auto}.modal-tools input{min-width:100%}}
+
+/* ===== Field Entry: 25-SKU pagination + submission confirmation ===== */
+.entry-submit-bar{position:sticky;top:12px;z-index:20;display:flex;justify-content:space-between;align-items:center;gap:16px;padding:12px 14px;margin:10px 0 12px;background:#F8FBFF;border:1px solid #C9D8EA;border-radius:10px;box-shadow:0 8px 24px rgba(15,23,42,.08)}
+.entry-submit-bar .muted{margin-left:6px}
+.entry-page-note{font-size:11px;color:#64748B;margin:8px 2px}
+.entry-pagination{display:flex;justify-content:center;align-items:center;gap:16px;padding:14px 0 4px;font-size:11px;color:#64748B}
+.btn.small{padding:7px 10px;font-size:11px}
+.entry-pagination button:disabled,.entry-submit-bar button:disabled{opacity:.5;cursor:not-allowed}
+.entry-popup-overlay{position:fixed;inset:0;background:rgba(15,23,42,.48);display:none;align-items:center;justify-content:center;z-index:999;padding:20px}
+.entry-popup-overlay.open{display:flex}
+.entry-popup{width:min(430px,100%);background:#fff;border-radius:16px;padding:30px;text-align:center;box-shadow:0 25px 70px rgba(15,23,42,.28)}
+.entry-popup-icon{width:54px;height:54px;border-radius:50%;display:grid;place-items:center;margin:0 auto 14px;font-size:28px;font-weight:800;background:#E2E8F0;color:#475569}
+.entry-popup-icon.good{background:#DCFCE7;color:#166534}
+.entry-popup-icon.bad{background:#FEE2E2;color:#B91C1C}
+.entry-popup h3{font-family:var(--font-display);font-size:20px;margin:0 0 8px;color:#172033}
+.entry-popup p{font-size:12px;line-height:1.6;color:#64748B;margin:0 0 20px}
+@media(max-width:700px){.entry-submit-bar{position:static;align-items:flex-start;flex-direction:column}.entry-submit-bar button{width:100%}.entry-pagination{justify-content:space-between}}
+
+/* Final UI controls */
+.table-tools{position:relative;display:flex;align-items:center;justify-content:flex-end;gap:10px;margin:0 0 10px}.table-tools>.muted{margin-right:auto}.column-picker{position:absolute;right:0;top:38px;z-index:100;background:#fff;border:1px solid var(--line);border-radius:12px;box-shadow:0 14px 40px rgba(15,23,42,.16);width:340px;padding:12px}.column-picker.hidden{display:none}.column-picker-head{display:flex;justify-content:space-between;align-items:center;padding:4px 4px 10px;border-bottom:1px solid var(--line)}.column-picker-head button{border:0;background:none;cursor:pointer}.column-item{display:flex;justify-content:space-between;align-items:center;padding:7px 5px;border-bottom:1px solid #eef2f7;font-size:11px}.column-item button{border:1px solid var(--line);background:#fff;border-radius:5px;margin-left:3px;cursor:pointer}.column-picker-foot{display:flex;justify-content:flex-end;gap:7px;padding-top:10px}.small{padding:7px 10px!important;font-size:11px!important}.modal-filters{display:flex;gap:8px;margin-bottom:12px}.modal-filters input,.modal-filters select{border:1px solid var(--line);border-radius:8px;padding:9px 10px;font:inherit}.modal-filters input{flex:1}.entry-submit-bar{position:sticky;top:0;z-index:10;display:flex;justify-content:space-between;align-items:center;gap:12px;background:#fff;border:1px solid #D9E1EC;border-radius:12px;padding:12px 14px;margin:12px 0;box-shadow:0 8px 24px rgba(15,23,42,.08)}.entry-page-note{font-size:11px;color:#64748B;margin:8px 0}.entry-pagination{display:flex;justify-content:center;align-items:center;gap:18px;padding:14px}.entry-popup-overlay{position:fixed;inset:0;background:rgba(15,23,42,.5);display:flex;align-items:center;justify-content:center;z-index:500;padding:20px}.entry-popup{background:#fff;border-radius:16px;padding:28px;max-width:430px;width:100%;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.2)}.entry-popup-icon{width:52px;height:52px;border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 12px;font-size:28px;font-weight:800}.entry-popup-icon.good{background:#E8F7F0;color:#0F766E}.entry-popup-icon.bad{background:#FDECEC;color:#DC2626}.entry-popup-overlay:not(.open){display:none}

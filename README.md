@@ -1,53 +1,57 @@
-# SKU 360 Dashboard — Stock vs Sales + Variance + Field Entry
+# EKA Dashboard — Final
 
-## Workbook structure
-Use one linked Excel workbook with these sheets:
+## Pages
+- Overview — Qty and Value KPIs; LY vs L3M Average vs Current Month; EBO/Kiosk/Airport charts.
+- SKU Explorer — Unique SKU, Stock Qty, Stock Value, NOD count; Top 10/Top 25 stock vs L3M/CM/LY; sales momentum; clickable shop detail with search/filter.
+- Store Analysis — store KPIs, stock/run-rate, sales momentum, NOD distribution, type-wise performance; clickable SKU detail with search/filter.
+- Data Table — full Stock_Data table with Forecast Qty and persistent column-sequence control.
+- Variance Analysis — Qty/Value switch, Opening + Inward - Tertiary reconciliation, live field submissions, actual-vs-system closing difference, issue filter and CSV export.
+- Field Entry — separate `/entry` URL for field staff; email-to-shop mapping, 25 SKUs/page, master SKU search/add, live counts, Stock + Tester + Total, verified submission popup.
 
-- `Stock_Data`
-- `Variance_Data`
-- `User_Shop_Map`
-- `SKU_Master`
+## NOD rule
+NOD is never averaged. It is calculated from current stock and L3M average sales:
+`NOD = Current Stock Qty × 31 ÷ L3M Avg Sales Qty`
 
-`Stock_Data` drives Stock vs Sales, Pareto and Forecast.
-`Variance_Data` drives movement reconciliation.
-`User_Shop_Map` maps field-staff email IDs to shops.
-`SKU_Master` is the only source allowed for adding extra SKUs in the field form.
+## Forecast rule
+- Top 10 = L3M Avg Qty × 2 months
+- Top 25 = L3M Avg Qty × 1.5 months
+- Others = L3M Avg Qty × 1 month
 
-## Forecast
-- Top 10 = L3M Avg Qty × 2
-- Top 25 = L3M Avg Qty × 1.5
-- Others = L3M Avg Qty × 1
+## Workbook sheets
+`Stock_Data`, `Variance_Data`, `User_Shop_Map`, `SKU_Master`.
 
-The dashboard calculates `Forecast Qty` automatically. `Ideal Stock` is retained from Excel; if it is blank/missing, Forecast Qty is used as the fallback.
+Stock_Data recommended columns:
+`Type, Store Name, EAN Code, Product Name, Pareto, Stock, Total MRP Value, L3M Avg Qty, L3M Avg Value, LY Qty, LY Value, Current Month Qty, Current Month Value, Status, Ideal Stock`
 
-## Render environment variables
+Variance_Data required columns:
+`Store Name, EAN Code, Product Name, Opening Stock Qty, Inward Qty, Tertiary Qty, Closing Stock Qty, Opening Stock Value, Inward Value, Tertiary Value, Closing Stock Value`
+
+User_Shop_Map: `Email ID, Store Name`
+SKU_Master: `EAN Code, Product Name`
+
+## Render environment
 Required:
-- `EXCEL_URL` = public/downloadable link to the workbook
+- `EXCEL_URL`
+- `SUBMISSION_API_URL`
+- `SUBMISSION_API_SECRET`
 
 Optional:
 - `EXCEL_SHEET=Stock_Data`
-- `VARIANCE_EXCEL_URL` = separate workbook link if variance is maintained separately
+- `VARIANCE_EXCEL_URL`
 - `VARIANCE_SHEET=Variance_Data`
 - `CACHE_SECONDS=300`
 
-Field-entry storage options:
-1. Recommended: Google Apps Script + Google Sheet. Set `SUBMISSION_API_URL` and `SUBMISSION_API_SECRET`.
-2. Fallback: SQLite. Set `DATABASE_PATH=/var/data/submissions.db` only if your Render service has a persistent disk mounted at `/var/data`.
+Field URL: `https://YOUR-RENDER-URL/entry`
 
-Field staff URL is the same Render service plus `/entry`.
-
-## Local run
-```bash
-pip install -r requirements.txt
-flask --app app run
-```
+## Google Apps Script
+Deploy `apps_script.gs` as a Web App:
+Execute as: Me
+Who has access: Anyone
+Use the `/exec` URL as `SUBMISSION_API_URL` and keep `SUBMISSION_API_SECRET` identical to `SECRET`.
 
 ## Git update
 ```bat
-git status
 git add .
-git commit -m "Update SKU dashboard with forecast variance and field entry"
-git pull --rebase origin main
+git commit -m "Final dashboard analytics and field entry update"
 git push origin main
 ```
-If `git pull --rebase` reports local uncommitted changes, commit them first.

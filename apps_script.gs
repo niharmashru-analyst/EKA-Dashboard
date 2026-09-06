@@ -5,7 +5,7 @@
  -> Web app -> Execute as Me -> Who has access: Anyone.
  Copy the /exec URL into Render as SUBMISSION_API_URL.
 */
-const SECRET = 'CHANGE_ME_TO_A_LONG_RANDOM_SECRET';
+const SECRET = 'EKA2026Stock123';
 const SHEET_NAME = 'Submissions';
 const HEADERS = ['submitted_at','email','store_name','ean_code','product_name','stock','tester','total'];
 

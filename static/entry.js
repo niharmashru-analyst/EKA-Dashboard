@@ -1,130 +1,217 @@
-let email='', stores=[], selectedStore='', master=[], rows=[];
-const $=id=>document.getElementById(id);
-const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+let email = '', stores = [], selectedStore = '', master = [], rows = [];
+let currentPage = 1;
+const PAGE_SIZE = 25;
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 
-function msg(t,good=false){$('entryMsg').innerHTML=`<div class="entry-msg ${good?'good':'bad'}">${esc(t)}</div>`}
-function enteredCount(){return rows.filter(r=>Number(r.stock||0)!==0 || Number(r.tester||0)!==0).length}
-function enteredQty(){return rows.reduce((a,r)=>a+Number(r.stock||0)+Number(r.tester||0),0)}
-function updateSummary(){
-  const total=rows.length, entered=enteredCount(), qty=enteredQty();
-  $('skuCount').textContent=total.toLocaleString('en-IN');
-  $('enteredCount').textContent=entered.toLocaleString('en-IN');
-  $('enteredQty').textContent=qty.toLocaleString('en-IN');
-  $('progressText').textContent=`${entered} of ${total} SKU${total===1?'':'s'} entered`;
+function showPopup(title, text, good = true) {
+  let el = $('entryPopup');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'entryPopup';
+    el.className = 'entry-popup-overlay';
+    el.innerHTML = `<div class="entry-popup"><div id="entryPopupIcon" class="entry-popup-icon"></div><h3 id="entryPopupTitle"></h3><p id="entryPopupText"></p><button id="entryPopupClose" class="btn">Done</button></div>`;
+    document.body.appendChild(el);
+    $('entryPopupClose').onclick = () => el.classList.remove('open');
+    el.onclick = e => { if (e.target === el) el.classList.remove('open'); };
+  }
+  $('entryPopupIcon').textContent = good ? '✓' : '!';
+  $('entryPopupIcon').className = `entry-popup-icon ${good ? 'good' : 'bad'}`;
+  $('entryPopupTitle').textContent = title;
+  $('entryPopupText').textContent = text;
+  el.classList.add('open');
 }
 
-async function loadMeta(){
-  email=$('email').value.trim().toLowerCase();
-  if(!email){$('store').disabled=true;$('store').innerHTML='<option>Enter email first</option>';return}
-  try{
-    let r=await fetch('/api/entry-meta?email='+encodeURIComponent(email));
-    let j=await r.json();if(!j.ok)throw Error(j.error);
-    stores=j.stores||[];master=j.master_skus||[];
-    if(stores.length===1){
-      selectedStore=stores[0];
-      $('store').innerHTML=`<option>${esc(stores[0])}</option>`;
-      $('store').disabled=true;
+function msg(t, good = false) {
+  $('entryMsg').innerHTML = `<div class="entry-msg ${good ? 'good' : 'bad'}">${esc(t)}</div>`;
+}
+
+function enteredCount() {
+  return rows.filter(r => Number(r.stock || 0) !== 0 || Number(r.tester || 0) !== 0).length;
+}
+function enteredQty() {
+  return rows.reduce((a, r) => a + Number(r.stock || 0) + Number(r.tester || 0), 0);
+}
+function updateSummary() {
+  const total = rows.length, entered = enteredCount(), qty = enteredQty();
+  $('skuCount').textContent = total.toLocaleString('en-IN');
+  $('enteredCount').textContent = entered.toLocaleString('en-IN');
+  $('enteredQty').textContent = qty.toLocaleString('en-IN');
+  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  currentPage = Math.min(currentPage, pages);
+  $('progressText') && ($('progressText').textContent = `${entered} of ${total} SKU${total === 1 ? '' : 's'} entered`);
+}
+
+async function getJson(url, options = {}) {
+  const r = await fetch(url, { cache: 'no-store', ...options });
+  let j;
+  try { j = await r.json(); } catch (_) { throw Error(`Server returned HTTP ${r.status}`); }
+  if (!r.ok || !j.ok) throw Error(j.error || `Request failed (${r.status})`);
+  return j;
+}
+
+async function loadMeta() {
+  email = $('email').value.trim().toLowerCase();
+  if (!email) {
+    $('store').disabled = true;
+    $('store').innerHTML = '<option>Enter email first</option>';
+    return;
+  }
+  try {
+    const j = await getJson('/api/entry-meta?email=' + encodeURIComponent(email) + '&_ts=' + Date.now());
+    stores = j.stores || [];
+    master = j.master_skus || [];
+    if (stores.length === 1) {
+      selectedStore = stores[0];
+      $('store').innerHTML = `<option value="${esc(stores[0])}">${esc(stores[0])}</option>`;
+      $('store').disabled = true;
       await loadSku();
-    }else{
-      $('store').disabled=false;
-      $('store').innerHTML='<option value="">Select shop</option>'+stores.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join('');
-      $('skuArea').innerHTML='';
-      $('submitEntry').disabled=true;
-      rows=[];updateSummary();
+    } else {
+      selectedStore = '';
+      $('store').disabled = false;
+      $('store').innerHTML = '<option value="">Select shop</option>' + stores.map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('');
+      $('skuArea').innerHTML = '';
+      rows = [];
+      currentPage = 1;
+      updateSummary();
     }
-    msg('Email verified. '+stores.length+' shop(s) mapped.',true)
-  }catch(e){
-    msg(e.message);$('store').disabled=true;$('skuArea').innerHTML='';$('submitEntry').disabled=true;rows=[];updateSummary();
+    msg(`Email verified. ${stores.length} shop(s) mapped.`, true);
+  } catch (e) {
+    msg(e.message);
+    $('store').disabled = true;
+    $('skuArea').innerHTML = '';
+    rows = [];
+    currentPage = 1;
+    updateSummary();
   }
 }
 
-async function loadSku(){
-  selectedStore=$('store').value||selectedStore;if(!selectedStore)return;
-  try{
-    let r=await fetch('/api/entry-meta?email='+encodeURIComponent(email)+'&store='+encodeURIComponent(selectedStore));
-    let j=await r.json();if(!j.ok)throw Error(j.error);
-    master=j.master_skus||[];
-    const available=j.available_skus||[];
-    rows=available.map(x=>({ean:String(x['EAN Code']),name:x['Product Name'],stock:0,tester:0}));
+async function loadSku() {
+  selectedStore = $('store').value || selectedStore;
+  if (!selectedStore) return;
+  try {
+    const j = await getJson('/api/entry-meta?email=' + encodeURIComponent(email) + '&store=' + encodeURIComponent(selectedStore) + '&_ts=' + Date.now());
+    master = j.master_skus || master;
+    const available = j.available_skus || [];
+    rows = available.map(x => ({ ean: String(x['EAN Code'] ?? '').trim(), name: String(x['Product Name'] ?? ''), stock: 0, tester: 0 }));
+    currentPage = 1;
     render();
-    $('submitEntry').disabled=!rows.length;
-    msg(`${rows.length.toLocaleString('en-IN')} SKU(s) loaded for ${selectedStore}.`,true);
-  }catch(e){msg(e.message)}
+    msg(`${rows.length.toLocaleString('en-IN')} SKU(s) loaded for ${selectedStore}.`, true);
+  } catch (e) { msg(e.message); }
 }
 
-function render(){
+function render() {
   $('skuArea').classList.remove('hidden');
-  const entered=enteredCount();
-  $('skuArea').innerHTML=`
+  const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  currentPage = Math.min(currentPage, pages);
+  const start = (currentPage - 1) * PAGE_SIZE;
+  const visible = rows.slice(start, start + PAGE_SIZE);
+  const entered = enteredCount();
+
+  $('skuArea').innerHTML = `
     <div class="entry-toolbar">
-      <div><b>${esc(selectedStore)}</b><div class="muted entry-progress" id="progressText">${entered} of ${rows.length} SKU${rows.length===1?'':'s'} entered</div></div>
+      <div><b>${esc(selectedStore)}</b><div class="muted entry-progress" id="progressText">${entered} of ${rows.length} SKU${rows.length === 1 ? '' : 's'} entered</div></div>
       <button id="addSku" class="link-btn">+ Add SKU From Master</button>
     </div>
-    <div id="masterPicker" class="master-picker hidden">
+    <div class="entry-submit-bar">
+      <div><b>Ready to submit?</b><span class="muted"> ${entered} SKU(s) entered • ${enteredQty().toLocaleString('en-IN')} total Qty</span></div>
+      <button id="submitEntryTop" class="btn" ${rows.length ? '' : 'disabled'}>Submit Stock</button>
+    </div>
+    <div class="master-picker hidden" id="masterPicker">
       <div class="master-picker-head"><b>Add SKU From Master</b><button id="closeMaster" class="picker-close">✕</button></div>
       <input id="masterSearch" class="master-search" placeholder="Search EAN / SKU / Product name…" autocomplete="off">
       <div id="masterResults" class="master-results"></div>
     </div>
+    <div class="entry-page-note">Showing <b>${rows.length ? start + 1 : 0}–${Math.min(start + PAGE_SIZE, rows.length)}</b> of <b>${rows.length}</b> SKUs</div>
     <div class="entry-table-wrap"><table class="entry-table"><thead><tr><th>EAN / SKU</th><th>Product</th><th>Stock</th><th>Tester</th><th>Total</th></tr></thead><tbody>
-    ${rows.map((r,i)=>`<tr><td>${esc(r.ean)}</td><td>${esc(r.name)}</td><td><input class="entry-num" data-i="${i}" data-k="stock" type="number" min="0" step="1" value="${r.stock}"></td><td><input class="entry-num" data-i="${i}" data-k="tester" type="number" min="0" step="1" value="${r.tester}"></td><td class="total-cell" id="tot-${i}">${r.stock+r.tester}</td></tr>`).join('')}
-    </tbody></table></div>`;
+    ${visible.map((r, localIndex) => { const i = start + localIndex; return `<tr><td>${esc(r.ean)}</td><td>${esc(r.name)}</td><td><input class="entry-num" data-i="${i}" data-k="stock" type="number" min="0" step="1" value="${Number(r.stock || 0)}"></td><td><input class="entry-num" data-i="${i}" data-k="tester" type="number" min="0" step="1" value="${Number(r.tester || 0)}"></td><td class="total-cell" id="tot-${i}">${Number(r.stock || 0) + Number(r.tester || 0)}</td></tr>`; }).join('')}
+    </tbody></table></div>
+    <div class="entry-pagination">
+      <button class="btn secondary small" id="prevPage" ${currentPage <= 1 ? 'disabled' : ''}>← Previous</button>
+      <span>Page <b>${currentPage}</b> of <b>${pages}</b></span>
+      <button class="btn secondary small" id="nextPage" ${currentPage >= pages ? 'disabled' : ''}>Next →</button>
+    </div>`;
 
-  document.querySelectorAll('.entry-num').forEach(x=>x.oninput=()=>{
-    rows[+x.dataset.i][x.dataset.k]=Math.max(0,Number(x.value||0));
-    $('tot-'+x.dataset.i).textContent=rows[+x.dataset.i].stock+rows[+x.dataset.i].tester;
+  document.querySelectorAll('.entry-num').forEach(x => x.oninput = () => {
+    rows[+x.dataset.i][x.dataset.k] = Math.max(0, Number(x.value || 0));
+    $('tot-' + x.dataset.i).textContent = rows[+x.dataset.i].stock + rows[+x.dataset.i].tester;
     updateSummary();
+    const top = $('submitEntryTop');
+    if (top) top.disabled = !rows.length;
   });
 
-  $('addSku').onclick=()=>openMasterPicker();
-  $('closeMaster').onclick=()=>closeMasterPicker();
-  $('masterSearch').oninput=renderMasterResults;
+  $('addSku').onclick = openMasterPicker;
+  $('closeMaster').onclick = closeMasterPicker;
+  $('masterSearch').oninput = renderMasterResults;
+  $('prevPage').onclick = () => { if (currentPage > 1) { currentPage--; render(); } };
+  $('nextPage').onclick = () => { if (currentPage < pages) { currentPage++; render(); } };
+  $('submitEntryTop').onclick = submitAll;
   renderMasterResults();
   updateSummary();
 }
 
-function openMasterPicker(){
+function openMasterPicker() {
   $('masterPicker').classList.remove('hidden');
-  $('masterSearch').value='';
+  $('masterSearch').value = '';
   renderMasterResults();
   $('masterSearch').focus();
 }
-function closeMasterPicker(){$('masterPicker').classList.add('hidden')}
+function closeMasterPicker() { $('masterPicker').classList.add('hidden'); }
 
-function renderMasterResults(){
-  const q=($('masterSearch')?.value||'').trim().toLowerCase();
-  const existing=new Set(rows.map(r=>String(r.ean).trim()));
-  const options=master.filter(m=>!existing.has(String(m['EAN Code']).trim()) && (!q || String(m['EAN Code']).toLowerCase().includes(q) || String(m['Product Name']).toLowerCase().includes(q)));
-  const box=$('masterResults');
-  if(!box)return;
-  if(!options.length){box.innerHTML='<div class="master-empty">No new SKU found in SKU Master.</div>';return}
-  box.innerHTML=options.slice(0,100).map(m=>`<button class="master-option" data-ean="${esc(m['EAN Code'])}"><span><b>${esc(m['EAN Code'])}</b><small>${esc(m['Product Name'])}</small></span><span>＋</span></button>`).join('');
-  box.querySelectorAll('.master-option').forEach(b=>b.onclick=()=>addMasterSku(b.dataset.ean));
+function renderMasterResults() {
+  const q = ($('masterSearch')?.value || '').trim().toLowerCase();
+  const existing = new Set(rows.map(r => String(r.ean).trim().toLowerCase()));
+  const options = master.filter(m => {
+    const ean = String(m['EAN Code'] ?? '').trim();
+    const name = String(m['Product Name'] ?? '');
+    return ean && !existing.has(ean.toLowerCase()) && (!q || ean.toLowerCase().includes(q) || name.toLowerCase().includes(q));
+  });
+  const box = $('masterResults');
+  if (!box) return;
+  if (!options.length) { box.innerHTML = '<div class="master-empty">No new SKU found in SKU Master.</div>'; return; }
+  box.innerHTML = options.slice(0, 100).map(m => `<button class="master-option" data-ean="${esc(m['EAN Code'])}"><span><b>${esc(m['EAN Code'])}</b><small>${esc(m['Product Name'])}</small></span><span>＋</span></button>`).join('');
+  box.querySelectorAll('.master-option').forEach(b => b.onclick = () => addMasterSku(b.dataset.ean));
 }
 
-function addMasterSku(ean){
-  const found=master.find(m=>String(m['EAN Code']).trim()===String(ean).trim());
-  if(!found)return;
-  if(rows.some(r=>String(r.ean).trim()===String(ean).trim())){msg('SKU is already in the table.');return}
-  rows.push({ean:String(found['EAN Code']),name:found['Product Name'],stock:0,tester:0});
-  closeMasterPicker();
+function addMasterSku(ean) {
+  const found = master.find(m => String(m['EAN Code']).trim() === String(ean).trim());
+  if (!found) return;
+  if (rows.some(r => String(r.ean).trim() === String(ean).trim())) { msg('SKU is already in the table.'); return; }
+  rows.push({ ean: String(found['EAN Code']).trim(), name: String(found['Product Name'] || ''), stock: 0, tester: 0 });
+  currentPage = Math.ceil(rows.length / PAGE_SIZE);
   render();
-  msg(`${found['Product Name']} added from SKU Master.`,true);
+  msg(`${found['Product Name']} added from SKU Master.`, true);
 }
 
-$('email').addEventListener('blur',loadMeta);
-$('email').addEventListener('keydown',e=>{if(e.key==='Enter')loadMeta()});
-$('store').onchange=loadSku;
-
-$('submitEntry').onclick=async()=>{
-  if(!rows.length)return;
-  const b=$('submitEntry');b.disabled=true;b.textContent='Submitting…';
-  try{
-    let r=await fetch('/api/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,store_name:selectedStore,rows:rows.map(r=>({'EAN Code':r.ean,'Stock':r.stock,'Tester':r.tester}))})});
-    let j=await r.json();if(!j.ok)throw Error(j.error);
-    msg(`Submitted successfully • ${j.saved_rows} SKU rows saved.`,true);
-    rows.forEach(r=>{r.stock=0;r.tester=0});
+async function submitAll() {
+  if (!rows.length || !selectedStore) return;
+  const button = $('submitEntryTop');
+  if (button) { button.disabled = true; button.textContent = 'Submitting…'; }
+  msg('Submitting all SKU entries…', true);
+  try {
+    const payload = {
+      email,
+      store_name: selectedStore,
+      rows: rows.map(r => ({ 'EAN Code': r.ean, 'Product Name': r.name, 'Stock': Number(r.stock || 0), 'Tester': Number(r.tester || 0), 'Total': Number(r.stock || 0) + Number(r.tester || 0) }))
+    };
+    const j = await getJson('/api/submit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    const saved = Number(j.saved_rows || 0);
+    showPopup('Submission Successful', `${saved.toLocaleString('en-IN')} SKU rows were submitted successfully for ${selectedStore}.`, true);
+    msg(`${saved.toLocaleString('en-IN')} SKU rows submitted successfully.`, true);
+    rows.forEach(r => { r.stock = 0; r.tester = 0; });
+    currentPage = 1;
     render();
-  }catch(e){msg(e.message)}finally{b.disabled=false;b.textContent='Submit Stock'}
-};
+  } catch (e) {
+    showPopup('Submission Failed', e.message || 'The submission could not be completed. No entries were cleared.', false);
+    msg(`Submission failed: ${e.message}`, false);
+  } finally {
+    const b = $('submitEntryTop');
+    if (b) { b.disabled = !rows.length; b.textContent = 'Submit Stock'; }
+  }
+}
+
+$('email').addEventListener('blur', loadMeta);
+$('email').addEventListener('keydown', e => { if (e.key === 'Enter') loadMeta(); });
+$('store').onchange = loadSku;
 
 updateSummary();
