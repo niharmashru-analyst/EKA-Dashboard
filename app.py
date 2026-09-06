@@ -6,24 +6,46 @@ import pandas as pd
 from flask import Flask, jsonify, render_template, request, Response
 
 app = Flask(__name__)
+
+@app.after_request
+def compress_response(response):
+    # Keep large JSON responses fast over the network without adding a dependency.
+    if response.direct_passthrough or response.status_code < 200 or response.status_code >= 300:
+        return response
+    if 'Content-Encoding' in response.headers or 'Content-Length' not in response.headers:
+        return response
+    if int(response.headers.get('Content-Length','0') or 0) < 20000:
+        return response
+    accept = request.headers.get('Accept-Encoding','')
+    if 'gzip' not in accept:
+        return response
+    import gzip
+    data = response.get_data()
+    response.set_data(gzip.compress(data, compresslevel=5))
+    response.headers['Content-Encoding'] = 'gzip'
+    response.headers['Content-Length'] = str(len(response.get_data()))
+    response.headers['Vary'] = 'Accept-Encoding'
+    return response
 EXCEL_URL = os.getenv("EXCEL_URL", "").strip()
 EXCEL_SHEET = os.getenv("EXCEL_SHEET", "Stock_Data").strip()
 VARIANCE_EXCEL_URL = os.getenv("VARIANCE_EXCEL_URL", "").strip()
 VARIANCE_SHEET = os.getenv("VARIANCE_SHEET", "Variance_Data").strip()
-CACHE_SECONDS = int(os.getenv("CACHE_SECONDS", "300"))
+CACHE_SECONDS = int(os.getenv("CACHE_SECONDS", "900"))
 SUBMISSION_API_URL = os.getenv("SUBMISSION_API_URL", "").strip()
 SUBMISSION_API_SECRET = os.getenv("SUBMISSION_API_SECRET", "").strip()
 DATABASE_PATH = os.getenv("DATABASE_PATH", os.path.join(app.root_path, "data", "submissions.db"))
 
-STOCK_REQUIRED = ["Type","Store Name","EAN Code","Product Name","Pareto","Stock",
-                  "Total MRP Value","L3M Avg Qty","L3M Avg Value","NOD"]
-VAR_REQUIRED = ["Store Name","EAN Code","Product Name","Opening Stock Qty","Inward Qty",
-               "Tertiary Qty","Closing Stock Qty","Opening Stock Value","Inward Value",
-               "Tertiary Value","Closing Stock Value"]
+STOCK_REQUIRED = ["Type","Store Name","EAN Code","Product Name","Pareto","Stock","Total MRP Value","L3M Avg Qty","L3M Avg Value","NOD"]
+VAR_REQUIRED = ["Store Name","EAN Code","Product Name","Opening Stock Qty","Inward Qty","Tertiary Qty","Closing Stock Qty","Opening Stock Value","Inward Value","Tertiary Value","Closing Stock Value"]
 MAP_REQUIRED = ["Email ID","Store Name"]
 MASTER_REQUIRED = ["EAN Code","Product Name"]
 
-_cache = {"stock_ts":0, "stock_df":None, "stock_source":"", "var_ts":0, "var_df":None, "var_source":"", "map_ts":0, "map_df":None, "master_ts":0, "master_df":None}
+_cache = {
+    "workbook_ts": 0, "workbook_raw": None, "workbook_url": "", "workbook_sheets": [], "workbook_xls": None,
+    "stock_ts": 0, "stock_df": None, "stock_source": "",
+    "var_ts": 0, "var_df": None, "var_source": "",
+    "map_ts": 0, "map_df": None, "master_ts": 0, "master_df": None,
+}
 
 
 def public_download_url(url):
@@ -48,27 +70,35 @@ def load_from_url(url):
     raise RuntimeError(last or "Could not download Excel file")
 
 
-def read_excel_sheet(url, sheet_name, local_name):
+def workbook_raw(url, force=False):
+    now = time.time()
+    if force or _cache["workbook_raw"] is None or _cache["workbook_url"] != url or now - _cache["workbook_ts"] >= CACHE_SECONDS:
+        raw = load_from_url(url) if url else None
+        _cache.update(workbook_ts=now, workbook_raw=raw, workbook_url=url, workbook_sheets=[], workbook_xls=None)
+    return _cache["workbook_raw"]
+
+
+def read_sheet_from_workbook(url, sheet_name, local_name, force=False):
     if url:
-        raw = load_from_url(url); xls = pd.ExcelFile(io.BytesIO(raw))
+        raw = workbook_raw(url, force)
+        if force or _cache.get("workbook_xls") is None:
+            _cache["workbook_xls"] = pd.ExcelFile(io.BytesIO(raw))
+        xls = _cache["workbook_xls"]
         sheet = sheet_name if sheet_name and sheet_name in xls.sheet_names else xls.sheet_names[0]
-        return pd.read_excel(io.BytesIO(raw), sheet_name=sheet), f"Linked Excel • {sheet}"
+        return pd.read_excel(xls, sheet_name=sheet), f"Linked Excel • {sheet}"
     local = os.path.join(app.root_path, "data", local_name)
     if not os.path.exists(local): raise RuntimeError(f"No linked Excel configured and {local_name} is missing.")
     return pd.read_excel(local, sheet_name=sheet_name if sheet_name else 0), f"Bundled Excel • {sheet_name}"
 
 
 def clean_stock(df):
-    df.columns = [str(c).strip() for c in df.columns]
+    df = df.copy(); df.columns = [str(c).strip() for c in df.columns]
     missing = [c for c in STOCK_REQUIRED if c not in df.columns]
     if missing: raise RuntimeError("Stock_Data missing required columns: " + ", ".join(missing))
-    for c in ["Stock","Total MRP Value","L3M Avg Qty","L3M Avg Value","NOD"]:
-        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
-    for c in ["Type","Store Name","EAN Code","Product Name","Pareto"]:
-        df[c] = df[c].fillna("").astype(str).str.strip()
+    for c in ["Stock","Total MRP Value","L3M Avg Qty","L3M Avg Value","NOD"]: df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+    for c in ["Type","Store Name","EAN Code","Product Name","Pareto"]: df[c] = df[c].fillna("").astype(str).str.strip()
     df["Forecast Months"] = df["Pareto"].map({"Top 10":2.0,"Top 25":1.5,"Others":1.0}).fillna(1.0)
     df["Forecast Qty"] = df["L3M Avg Qty"] * df["Forecast Months"]
-    # If Ideal Stock is supplied, keep it. Otherwise Forecast Qty becomes the calculated ideal.
     if "Ideal Stock" not in df.columns: df["Ideal Stock"] = df["Forecast Qty"]
     else: df["Ideal Stock"] = pd.to_numeric(df["Ideal Stock"], errors="coerce").fillna(df["Forecast Qty"])
     if "Status" not in df.columns: df["Status"] = ""
@@ -77,7 +107,7 @@ def clean_stock(df):
 
 
 def clean_variance(df):
-    df.columns = [str(c).strip() for c in df.columns]
+    df = df.copy(); df.columns = [str(c).strip() for c in df.columns]
     missing = [c for c in VAR_REQUIRED if c not in df.columns]
     if missing: raise RuntimeError("Variance_Data missing required columns: " + ", ".join(missing))
     for c in VAR_REQUIRED[3:]: df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
@@ -91,7 +121,7 @@ def clean_variance(df):
 
 
 def clean_map(df):
-    df.columns = [str(c).strip() for c in df.columns]
+    df = df.copy(); df.columns = [str(c).strip() for c in df.columns]
     missing = [c for c in MAP_REQUIRED if c not in df.columns]
     if missing: raise RuntimeError("User_Shop_Map missing required columns: " + ", ".join(missing))
     for c in MAP_REQUIRED: df[c] = df[c].fillna("").astype(str).str.strip()
@@ -100,35 +130,45 @@ def clean_map(df):
 
 
 def clean_master(df):
-    df.columns = [str(c).strip() for c in df.columns]
+    df = df.copy(); df.columns = [str(c).strip() for c in df.columns]
     missing = [c for c in MASTER_REQUIRED if c not in df.columns]
     if missing: raise RuntimeError("SKU_Master missing required columns: " + ", ".join(missing))
     for c in MASTER_REQUIRED: df[c] = df[c].fillna("").astype(str).str.strip()
-    return df.drop_duplicates(subset=["EAN Code"], keep="first")
+    return df[df["EAN Code"]!=""].drop_duplicates(subset=["EAN Code"], keep="first")
 
 
-def load_all(force=False):
+def load_stock(force=False):
     now=time.time()
     if force or _cache["stock_df"] is None or now-_cache["stock_ts"]>=CACHE_SECONDS:
-        df,src=read_excel_sheet(EXCEL_URL,"" if not EXCEL_SHEET else EXCEL_SHEET,"data.xlsx")
+        df,src=read_sheet_from_workbook(EXCEL_URL, EXCEL_SHEET, "data.xlsx", force)
         _cache.update(stock_ts=now,stock_df=clean_stock(df),stock_source=src)
-    if force or _cache["map_df"] is None or now-_cache["map_ts"]>=CACHE_SECONDS:
-        # Mapping/master live in the same workbook as stock data.
-        raw=load_from_url(EXCEL_URL) if EXCEL_URL else None
-        if raw:
-            xls=pd.ExcelFile(io.BytesIO(raw))
-            _cache["map_df"]=clean_map(pd.read_excel(io.BytesIO(raw),sheet_name="User_Shop_Map")) if "User_Shop_Map" in xls.sheet_names else pd.DataFrame(columns=MAP_REQUIRED)
-            _cache["master_df"]=clean_master(pd.read_excel(io.BytesIO(raw),sheet_name="SKU_Master")) if "SKU_Master" in xls.sheet_names else pd.DataFrame(columns=MASTER_REQUIRED)
+    return _cache["stock_df"].copy()
+
+
+def load_entry_sources(force=False):
+    now=time.time()
+    if force or _cache["map_df"] is None or _cache["master_df"] is None or now-_cache["map_ts"]>=CACHE_SECONDS or now-_cache["master_ts"]>=CACHE_SECONDS:
+        if EXCEL_URL:
+            raw=workbook_raw(EXCEL_URL, force)
+            if force or _cache.get("workbook_xls") is None:
+                _cache["workbook_xls"] = pd.ExcelFile(io.BytesIO(raw))
+            xls=_cache["workbook_xls"]
+            mp=clean_map(pd.read_excel(xls,sheet_name="User_Shop_Map")) if "User_Shop_Map" in xls.sheet_names else pd.DataFrame(columns=MAP_REQUIRED)
+            master=clean_master(pd.read_excel(xls,sheet_name="SKU_Master")) if "SKU_Master" in xls.sheet_names else pd.DataFrame(columns=MASTER_REQUIRED)
         else:
             path=os.path.join(app.root_path,"data","data.xlsx")
-            _cache["map_df"]=clean_map(pd.read_excel(path,sheet_name="User_Shop_Map")) if os.path.exists(path) else pd.DataFrame(columns=MAP_REQUIRED)
-            _cache["master_df"]=clean_master(pd.read_excel(path,sheet_name="SKU_Master")) if os.path.exists(path) else pd.DataFrame(columns=MASTER_REQUIRED)
-        _cache["map_ts"]=now; _cache["master_ts"]=now
+            mp=clean_map(pd.read_excel(path,sheet_name="User_Shop_Map")) if os.path.exists(path) and "User_Shop_Map" in pd.ExcelFile(path).sheet_names else pd.DataFrame(columns=MAP_REQUIRED)
+            master=clean_master(pd.read_excel(path,sheet_name="SKU_Master")) if os.path.exists(path) and "SKU_Master" in pd.ExcelFile(path).sheet_names else pd.DataFrame(columns=MASTER_REQUIRED)
+        _cache["map_df"]=mp; _cache["master_df"]=master; _cache["map_ts"]=now; _cache["master_ts"]=now
+    return _cache["map_df"].copy(), _cache["master_df"].copy()
+
+
+def load_variance(force=False):
+    now=time.time(); url=VARIANCE_EXCEL_URL or EXCEL_URL
     if force or _cache["var_df"] is None or now-_cache["var_ts"]>=CACHE_SECONDS:
-        url=VARIANCE_EXCEL_URL or EXCEL_URL
-        df,src=read_excel_sheet(url,VARIANCE_SHEET,"data.xlsx")
+        df,src=read_sheet_from_workbook(url, VARIANCE_SHEET, "data.xlsx", force)
         _cache.update(var_ts=now,var_df=clean_variance(df),var_source=src)
-    return _cache["stock_df"].copy(), _cache["var_df"].copy(), _cache["map_df"].copy(), _cache["master_df"].copy()
+    return _cache["var_df"].copy()
 
 
 def json_records(df):
@@ -143,37 +183,32 @@ def json_records(df):
 def db_init():
     os.makedirs(os.path.dirname(DATABASE_PATH) or ".", exist_ok=True)
     with sqlite3.connect(DATABASE_PATH) as con:
-        con.execute("""CREATE TABLE IF NOT EXISTS submissions(
-            id INTEGER PRIMARY KEY AUTOINCREMENT, submitted_at TEXT, email TEXT, store_name TEXT,
-            ean_code TEXT, product_name TEXT, stock REAL, tester REAL, total REAL)""")
+        con.execute("""CREATE TABLE IF NOT EXISTS submissions(id INTEGER PRIMARY KEY AUTOINCREMENT, submitted_at TEXT, email TEXT, store_name TEXT, ean_code TEXT, product_name TEXT, stock REAL, tester REAL, total REAL)""")
+
 
 def save_local_submission(payload):
-    db_init(); ts=datetime.now(timezone.utc).isoformat()
-    rows=[]
+    db_init(); ts=datetime.now(timezone.utc).isoformat(); rows=[]
     for r in payload["rows"]:
         rows.append((ts,payload["email"],payload["store_name"],str(r.get("EAN Code","")),str(r.get("Product Name","")),float(r.get("Stock",0) or 0),float(r.get("Tester",0) or 0),float(r.get("Total",0) or 0)))
     with sqlite3.connect(DATABASE_PATH) as con:
         con.executemany("INSERT INTO submissions(submitted_at,email,store_name,ean_code,product_name,stock,tester,total) VALUES(?,?,?,?,?,?,?,?)",rows)
     return len(rows)
 
+
 def load_local_submissions():
     db_init()
-    with sqlite3.connect(DATABASE_PATH) as con:
-        df=pd.read_sql_query("SELECT * FROM submissions",con)
-    return df
+    with sqlite3.connect(DATABASE_PATH) as con: return pd.read_sql_query("SELECT * FROM submissions",con)
+
 
 def remote_request(method, payload=None):
     if not SUBMISSION_API_URL: return None
-    payload = payload or {}
+    payload=payload or {}
     if SUBMISSION_API_SECRET:
-        if method.upper()=="GET":
-            r=requests.get(SUBMISSION_API_URL,params={"secret":SUBMISSION_API_SECRET},timeout=30)
-        else:
-            payload={**payload,"secret":SUBMISSION_API_SECRET}
-            r=requests.request(method,SUBMISSION_API_URL,json=payload,timeout=30)
-    else:
-        r=requests.request(method,SUBMISSION_API_URL,json=payload,timeout=30)
+        if method.upper()=="GET": r=requests.get(SUBMISSION_API_URL,params={"secret":SUBMISSION_API_SECRET},timeout=30)
+        else: payload={**payload,"secret":SUBMISSION_API_SECRET}; r=requests.request(method,SUBMISSION_API_URL,json=payload,timeout=30)
+    else: r=requests.request(method,SUBMISSION_API_URL,json=payload,timeout=30)
     r.raise_for_status(); return r.json()
+
 
 @app.get("/")
 def index(): return render_template("index.html")
@@ -184,21 +219,21 @@ def entry(): return render_template("entry.html")
 @app.get("/api/data")
 def api_data():
     try:
-        stock,var,_,_=load_all(request.args.get("refresh")=="1")
+        stock=load_stock(request.args.get("refresh")=="1")
         return jsonify({"ok":True,"source":_cache["stock_source"],"rows":len(stock),"columns":list(stock.columns),"records":json_records(stock)})
     except Exception as e: return jsonify({"ok":False,"error":str(e)}),500
 
 @app.get("/api/variance")
 def api_variance():
     try:
-        _,var,_,_=load_all(request.args.get("refresh")=="1")
+        var=load_variance(request.args.get("refresh")=="1")
         return jsonify({"ok":True,"source":_cache["var_source"],"rows":len(var),"columns":list(var.columns),"records":json_records(var)})
     except Exception as e: return jsonify({"ok":False,"error":str(e)}),500
 
 @app.get("/api/entry-meta")
 def entry_meta():
     try:
-        stock,_,mp,master=load_all(request.args.get("refresh")=="1")
+        stock=load_stock(False); mp,master=load_entry_sources(False)
         email=request.args.get("email","").strip().lower(); stores=sorted(mp.loc[mp["Email ID"]==email,"Store Name"].unique().tolist()) if email else []
         if email and not stores: return jsonify({"ok":False,"error":"Email ID is not mapped to any shop."}),404
         store=request.args.get("store","").strip()
@@ -209,14 +244,12 @@ def entry_meta():
 @app.post("/api/submit")
 def submit():
     try:
-        payload=request.get_json(force=True)
-        email=str(payload.get("email","")).strip().lower(); store=str(payload.get("store_name","")).strip(); rows=payload.get("rows",[])
+        payload=request.get_json(force=True); email=str(payload.get("email","")).strip().lower(); store=str(payload.get("store_name","")).strip(); rows=payload.get("rows",[])
         if not email or not store or not rows: return jsonify({"ok":False,"error":"Email, shop and at least one SKU are required."}),400
-        _,_,mp,master=load_all()
+        mp,master=load_entry_sources(False)
         allowed=set(mp.loc[mp["Email ID"]==email,"Store Name"])
         if store not in allowed: return jsonify({"ok":False,"error":"This email is not mapped to the selected shop."}),403
-        master_map={str(x["EAN Code"]):x["Product Name"] for _,x in master.iterrows()}
-        cleaned=[]
+        master_map={str(x["EAN Code"]):x["Product Name"] for _,x in master.iterrows()}; cleaned=[]
         for r in rows:
             ean=str(r.get("EAN Code","")).strip()
             if not ean or ean not in master_map: continue
@@ -225,25 +258,21 @@ def submit():
         if not cleaned: return jsonify({"ok":False,"error":"No valid SKU rows submitted."}),400
         payload={"email":email,"store_name":store,"rows":cleaned}
         if SUBMISSION_API_URL:
-            result=remote_request("POST",payload) or {}
-            return jsonify({"ok":True,"message":"Stock submitted successfully.","saved_rows":len(cleaned),"remote":result})
+            result=remote_request("POST",payload) or {}; return jsonify({"ok":True,"message":"Stock submitted successfully.","saved_rows":len(cleaned),"remote":result})
         return jsonify({"ok":True,"message":"Stock submitted successfully.","saved_rows":save_local_submission(payload)})
     except Exception as e: return jsonify({"ok":False,"error":str(e)}),500
 
 @app.get("/api/submissions")
 def submissions():
     try:
-        if SUBMISSION_API_URL:
-            data=remote_request("GET") or {}
-            return jsonify(data)
-        df=load_local_submissions()
-        return jsonify({"ok":True,"records":json_records(df)})
+        if SUBMISSION_API_URL: return jsonify(remote_request("GET") or {})
+        return jsonify({"ok":True,"records":json_records(load_local_submissions())})
     except Exception as e: return jsonify({"ok":False,"error":str(e)}),500
 
 @app.get("/api/export")
 def export():
     try:
-        stock,_,_,_=load_all()
+        stock=load_stock(False)
         for col in ["Type","Store Name","Pareto","Product Name","EAN Code"]:
             vals=request.args.getlist(col)
             if vals: stock=stock[stock[col].isin(vals)]
@@ -253,16 +282,10 @@ def export():
 @app.get("/api/variance-export")
 def variance_export():
     try:
-        _,df,_,_=load_all()
+        df=load_variance(False)
         if request.args.get("store"): df=df[df["Store Name"]==request.args.get("store")]
+        if request.args.get("sku"):
+            q=request.args.get("sku").lower(); df=df[df["EAN Code"].str.lower().str.contains(q,na=False) | df["Product Name"].str.lower().str.contains(q,na=False)]
         if request.args.get("issues")=="1": df=df[~df["Movement Check"]]
         return Response(df.to_csv(index=False),mimetype="text/csv",headers={"Content-Disposition":"attachment; filename=variance_analysis.csv"})
     except Exception as e: return jsonify({"ok":False,"error":str(e)}),500
-
-@app.get("/api/health")
-def health():
-    try:
-        stock,var,_,_=load_all(); return jsonify({"ok":True,"stock_rows":len(stock),"variance_rows":len(var),"submission_mode":"google_apps_script" if SUBMISSION_API_URL else "sqlite"})
-    except Exception as e: return jsonify({"ok":False,"error":str(e)}),500
-
-if __name__ == "__main__": app.run(host="0.0.0.0",port=int(os.getenv("PORT","5000")),debug=False)
