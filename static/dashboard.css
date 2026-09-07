@@ -60,3 +60,9 @@ main{background:var(--bg)}.eyebrow{color:#2563EB}.topbar h1{font-size:28px;lette
 .kpis-5{grid-template-columns:repeat(5,1fr)}
 @media(max-width:1100px){.kpis-5{grid-template-columns:repeat(3,1fr)}}
 @media(max-width:700px){.kpis-5{grid-template-columns:1fr 1fr}.chart-tall{height:390px}}
+
+/* Final analytics readability + interactive chart popup */
+.clickable-card{cursor:pointer;transition:transform .15s ease,box-shadow .15s ease}.clickable-card:hover{transform:translateY(-1px);box-shadow:0 10px 28px rgba(15,23,42,.09)}
+.modal-chart{height:560px;width:100%;min-width:0}.modal-overlay .modal{max-width:1400px;max-height:92vh}.modal-overlay .modal-body{min-height:620px}.modal-tools{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap}.modal-tools .seg{margin-left:auto}
+.chart{min-width:0}.card-title .muted{font-family:var(--font-body);font-size:10px;font-weight:600;margin-left:8px}
+@media(max-width:900px){.modal-chart{height:500px}.modal-overlay .modal{max-width:96vw}.modal-overlay .modal-body{min-height:0}}

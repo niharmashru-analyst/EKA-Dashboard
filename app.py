@@ -94,6 +94,7 @@ def read_sheet_from_workbook(url, sheet_name, local_name, force=False):
 
 def clean_stock(df):
     df = df.copy(); df.columns = [str(c).strip() for c in df.columns]
+    source_columns = list(df.columns)
     missing = [c for c in STOCK_REQUIRED if c not in df.columns]
     if missing: raise RuntimeError("Stock_Data missing required columns: " + ", ".join(missing))
     for c in ["Stock","Total MRP Value","L3M Avg Qty","L3M Avg Value","NOD"]: df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
@@ -114,6 +115,7 @@ def clean_stock(df):
     else: df["Ideal Stock"] = pd.to_numeric(df["Ideal Stock"], errors="coerce").fillna(df["Forecast Qty"])
     if "Status" not in df.columns: df["Status"] = ""
     if "LY" not in df.columns: df["LY"] = 0
+    df.attrs["source_columns"] = source_columns
     return df
 
 
@@ -190,8 +192,6 @@ def merge_variance_actuals(var, stock):
     Actual Value is derived from the current SKU's MRP/unit.
     """
     out = var.copy()
-    if out.empty:
-        return out
     subs = load_submissions_live()
     latest = {}
     if not subs.empty:
@@ -312,7 +312,8 @@ def entry(): return render_template("entry.html")
 def api_data():
     try:
         stock=load_stock(request.args.get("refresh")=="1")
-        resp=jsonify({"ok":True,"source":_cache["stock_source"],"rows":len(stock),"columns":list(stock.columns),"records":json_records(stock)})
+        source_columns = list(stock.attrs.get("source_columns") or [c for c in stock.columns if c not in {"Forecast Months","Forecast Qty","NOD Bucket"}])
+        resp=jsonify({"ok":True,"source":_cache["stock_source"],"rows":len(stock),"columns":list(stock.columns),"source_columns":source_columns,"records":json_records(stock)})
         resp.headers["Cache-Control"]="no-store, no-cache, must-revalidate, max-age=0"
         resp.headers["Pragma"]="no-cache"
         return resp
