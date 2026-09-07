@@ -91,3 +91,41 @@ main{background:var(--bg)}.eyebrow{color:#2563EB}.topbar h1{font-size:28px;lette
 .variance-note{display:flex;align-items:center;gap:8px;margin:-8px 0 14px;color:#64748B;font-size:11px}
 .variance-note span{padding:3px 7px;border-radius:999px;background:#FFF7ED;color:#C2410C;border:1px solid #FED7AA;font-weight:800;font-size:9px;letter-spacing:.7px}
 @media(max-width:900px){.variance-filters input{min-width:220px}.variance-filters select{min-width:180px}}
+
+/* ===== Refined Variance Analysis icon ===== */
+.nav.nav-beta .variance-icon{
+  width:22px;
+  height:22px;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  margin-right:10px;
+  border-radius:6px;
+  background:rgba(96,165,250,.10);
+  border:1px solid rgba(96,165,250,.18);
+  box-sizing:border-box;
+}
+.nav.nav-beta .variance-bars{
+  height:12px;
+  width:12px;
+  display:flex;
+  align-items:flex-end;
+  justify-content:center;
+  gap:2px;
+}
+.nav.nav-beta .variance-bars i{
+  display:block;
+  width:3px;
+  border-radius:2px;
+  background:#60A5FA;
+}
+.nav.nav-beta .variance-bars i:nth-child(1){height:6px}
+.nav.nav-beta .variance-bars i:nth-child(2){height:10px}
+.nav.nav-beta .variance-bars i:nth-child(3){height:8px}
+.nav.nav-beta.active .variance-icon{
+  background:rgba(147,197,253,.16);
+  border-color:rgba(191,219,254,.28);
+}
+.nav.nav-beta.active .variance-bars i{background:#DBEAFE}
+
+.table-wrap tbody tr[data-click-value]{cursor:pointer}.table-wrap tbody tr[data-click-value]:hover{background:#F8FAFC}.table-wrap{overflow:auto;max-height:70vh}.table-wrap table{min-width:max-content}.table-foot{padding:10px 12px;color:#64748B;font-size:11px}
