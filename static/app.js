@@ -51,11 +51,13 @@ function isNumericColumn(rows,c){
   if(!vals.length)return false;
   return vals.filter(v=>typeof v==='number' || (typeof v==='string'&&v.trim()!==''&&Number.isFinite(Number(v)))).length/vals.length>=0.8;
 }
-function aggregateBy(rows,keyCol){
+function aggregateBy(rows,keyCol,countCols=[]){
   // Aggregate at the requested business grain while retaining EVERY source
   // Excel column in the resulting row. Numeric source columns are summed;
-  // descriptive columns use the first non-blank value. This keeps the
-  // existing Excel-driven table structure intact instead of replacing it.
+  // descriptive columns use the first non-blank value; columns listed in
+  // countCols are instead replaced with a distinct-count label (e.g. "23
+  // Outlets") since a single arbitrary value for them would be misleading
+  // and made the aggregated table look like a plain per-row data dump.
   const groups=new Map();
   const sourceCols=[...DATA_COLUMNS];
   const numericCols=sourceCols.filter(c=>c!==keyCol && isNumericColumn(rows,c));
@@ -69,6 +71,7 @@ function aggregateBy(rows,keyCol){
       g[keyCol]=key;
       numericCols.forEach(c=>g[c]=0);
       g['__rowCount']=0;
+      countCols.forEach(c=>g['__set_'+c]=new Set());
       groups.set(key,g);
     }
     const g=groups.get(key);
@@ -76,6 +79,7 @@ function aggregateBy(rows,keyCol){
       if(numericCols.includes(c)) g[c]=(Number(g[c])||0)+(Number(r[c])||0);
       else if((g[c]===undefined || g[c]===null || String(g[c]).trim()==='') && r[c]!==undefined) g[c]=r[c];
     });
+    countCols.forEach(c=>{const v=String(r[c]??'').trim();if(v)g['__set_'+c].add(v)});
     g['__rowCount']++;
   });
   return [...groups.values()].map(g=>{
@@ -88,54 +92,31 @@ function aggregateBy(rows,keyCol){
       const months=p==='Top 10'?2:p==='Top 25'?1.5:1;
       g['Forecast Qty']=avg*months;
     }
+    const countLabel={'Store Name':'Outlets','EAN Code':'SKUs','Product Name':'Products'};
+    countCols.forEach(c=>{
+      const set=g['__set_'+c];
+      g[c]=set.size<=1?(set.size?[...set][0]:g[c]):`${set.size} ${countLabel[c]||c+' variants'}`;
+      delete g['__set_'+c];
+    });
     return g;
   });
 }
 function aggregateSku(rows){
-  // SKU Explorer = exactly one row per unique SKU/EAN.
-  // EAN is the primary key. If an Excel row has no EAN, Product Name is used
-  // only for that row so blank-EAN SKUs are not silently dropped.
-  const key=DATA_COLUMNS.includes('EAN Code')?'EAN Code':'Product Name';
-  if(key!=='EAN Code') return aggregateBy(rows,key);
-  const prepared=rows.map(r=>({...r,__skuKey:String(r['EAN Code']??'').trim() || String(r['Product Name']??'').trim()}));
-  const groups=new Map();
-  const sourceCols=[...DATA_COLUMNS];
-  const numericCols=sourceCols.filter(c=>c!=='EAN Code' && isNumericColumn(prepared,c));
-  prepared.forEach(r=>{
-    const k=String(r.__skuKey??'').trim();
-    if(!k)return;
-    if(!groups.has(k)){
-      const g={}; sourceCols.forEach(c=>g[c]=r[c]);
-      g['EAN Code']=String(r['EAN Code']??'').trim();
-      g['Product Name']=String(r['Product Name']??'').trim();
-      g.__skuKey=k; g.__rowCount=0;
-      numericCols.forEach(c=>g[c]=0);
-      groups.set(k,g);
-    }
-    const g=groups.get(k);
-    sourceCols.forEach(c=>{
-      if(c==='EAN Code') return;
-      if(numericCols.includes(c)) g[c]=(Number(g[c])||0)+(Number(r[c])||0);
-      else if((g[c]===undefined || g[c]===null || String(g[c]).trim()==='') && r[c]!==undefined) g[c]=r[c];
-    });
-    g.__rowCount++;
-  });
-  return [...groups.values()].map(g=>{
-    const avg=Number(g['L3M Avg Qty']||0);
-    g.NOD=avg>0 ? Number(g.Stock||0)*31/avg : 0;
-    g['NOD Bucket']=nodBucket(g.NOD);
-    g['Forecast Qty']=Number(g['Forecast Qty']||0);
-    if(!g['Forecast Qty']){
-      const p=normalizePareto(g.Pareto);
-      const months=p==='Top 10'?2:p==='Top 25'?1.5:1;
-      g['Forecast Qty']=avg*months;
-    }
-    return g;
-  });
+  // SKU Explorer = exactly one row per unique Product Name.
+  // NOTE: EAN Code is NOT used as the grouping key — in this data the same
+  // product can carry a different EAN Code per outlet, so grouping by EAN
+  // failed to merge rows at all and the "aggregated" table looked identical
+  // to the raw per-row Data Table. Product Name is the field that stays
+  // consistent for the same SKU across outlets, so it is the true key.
+  // The EAN Code / Store Name columns are shown as distinct-count labels
+  // (via countCols) instead of one arbitrary outlet's EAN/store.
+  return aggregateBy(rows,'Product Name',['Store Name','EAN Code']);
 }
 function aggregateStore(rows){
-  // Store Analysis = exactly one row per unique outlet/store.
-  return aggregateBy(rows,'Store Name');
+  // Store Analysis = exactly one row per unique outlet/store. EAN Code and
+  // Product Name are shown as distinct-count labels (e.g. "312 SKUs") since
+  // a store carries many SKUs, not one.
+  return aggregateBy(rows,'Store Name',['EAN Code','Product Name']);
 }
 function tableCols(rows){
   // The source Excel headers are authoritative and stay in the exact Excel
@@ -155,14 +136,13 @@ function products(){
   const top25=rows.filter(x=>normalizePareto(x.Pareto)==='Top 25').sort((a,b)=>(+b.Stock||0)-(+a.Stock||0));
   const nc=nodCounts(rows);
   const cols=tableCols(rows);
-  document.getElementById('app').innerHTML=`<div class="kpis kpis-4">${kpi('Total Unique SKUs',qty(rows.length),'One row per unique SKU')}${kpi('Stock Qty',qty(sum(rows,'Stock')),'Current stock')}${kpi('Stock Value',moneyL(sum(rows,'Total MRP Value')),'Current MRP')}${kpi('Valid NOD SKUs',qty(nc.total),'L3M-based NOD')}</div><div class="kpis kpis-4">${kpi('NOD <15',qty(nc.lt15),'SKU count','bad')}${kpi('NOD 15–30',qty(nc.n15_30),'SKU count')}${kpi('NOD 31–60',qty(nc.n31_60),'SKU count')}${kpi('NOD >60',qty(nc.gt60),'SKU count','bad')}</div><div class="grid2"><div class="card clickable-card"><div class="card-title">Top 10 Pareto SKUs — Top 5 Preview <span class="muted">Click chart for all 10</span></div><div id="top10Chart" class="chart"></div></div><div class="card clickable-card"><div class="card-title">Top 25 Pareto SKUs — Top 5 Preview <span class="muted">Click chart for all 25</span></div><div id="top25Chart" class="chart"></div></div></div><div class="card"><div class="card-title">SKU Explorer <span class="muted">${rows.length.toLocaleString('en-IN')} unique SKUs • click a row to see every outlet for that SKU</span></div>${table(rows,cols,'products',Infinity,'__skuKey')}</div>`;
+  document.getElementById('app').innerHTML=`<div class="kpis kpis-4">${kpi('Total Unique SKUs',qty(rows.length),'One row per unique SKU')}${kpi('Stock Qty',qty(sum(rows,'Stock')),'Current stock')}${kpi('Stock Value',moneyL(sum(rows,'Total MRP Value')),'Current MRP')}${kpi('Valid NOD SKUs',qty(nc.total),'L3M-based NOD')}</div><div class="kpis kpis-4">${kpi('NOD <15',qty(nc.lt15),'SKU count','bad')}${kpi('NOD 15–30',qty(nc.n15_30),'SKU count')}${kpi('NOD 31–60',qty(nc.n31_60),'SKU count')}${kpi('NOD >60',qty(nc.gt60),'SKU count','bad')}</div><div class="grid2"><div class="card clickable-card"><div class="card-title">Top 10 Pareto SKUs — Top 5 Preview <span class="muted">Click chart for all 10</span></div><div id="top10Chart" class="chart"></div></div><div class="card clickable-card"><div class="card-title">Top 25 Pareto SKUs — Top 5 Preview <span class="muted">Click chart for all 25</span></div><div id="top25Chart" class="chart"></div></div></div><div class="card"><div class="card-title">SKU Explorer <span class="muted">${rows.length.toLocaleString('en-IN')} unique SKUs • click a row to see every outlet for that SKU</span></div>${table(rows,cols,'products',Infinity,'Product Name')}</div>`;
   comboSkuOption('top10Chart',top10,'Top 10 Pareto SKUs');
   comboSkuOption('top25Chart',top25,'Top 25 Pareto SKUs');
   document.querySelectorAll('table[data-sort-id="products"] tbody tr').forEach(tr=>tr.onclick=()=>{
     const key=tr.dataset.clickValue;
-    let detail=FILTERED.filter(x=>String(x['EAN Code']??'').trim()===String(key).trim());
-    if(!detail.length)detail=FILTERED.filter(x=>String(x['Product Name']??'').trim()===String(key).trim());
-    if(detail.length)openDetailModal(detail[0]['Product Name']||key,'All outlets for this SKU',detail,'sku');
+    const detail=FILTERED.filter(x=>String(x['Product Name']??'').trim()===String(key).trim());
+    if(detail.length)openDetailModal(key,'All outlets for this SKU',detail,'sku');
   });
 }
 
