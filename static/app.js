@@ -51,62 +51,104 @@ function isNumericColumn(rows,c){
   return vals.filter(v=>typeof v==='number' || (typeof v==='string'&&v.trim()!==''&&Number.isFinite(Number(v)))).length/vals.length>=0.8;
 }
 function aggregateBy(rows,keyCol){
+  // Aggregate at the requested business grain while retaining EVERY source
+  // Excel column in the resulting row. Numeric source columns are summed;
+  // descriptive columns use the first non-blank value. This keeps the
+  // existing Excel-driven table structure intact instead of replacing it.
   const groups=new Map();
-  const numericCols=DATA_COLUMNS.filter(c=>isNumericColumn(rows,c) && !['NOD'].includes(String(c).toUpperCase()));
+  const sourceCols=[...DATA_COLUMNS];
+  const numericCols=sourceCols.filter(c=>isNumericColumn(rows,c));
   rows.forEach(r=>{
-    const key=String(r[keyCol]??'').trim() || 'Unknown';
+    const raw=r[keyCol];
+    const key=String(raw??'').trim();
+    if(!key)return; // do not create a fake blank outlet/SKU
     if(!groups.has(key)){
       const g={};
-      DATA_COLUMNS.forEach(c=>g[c]=r[c]);
+      sourceCols.forEach(c=>g[c]=r[c]);
       g[keyCol]=key;
       numericCols.forEach(c=>g[c]=0);
       g['__rowCount']=0;
-      g['Forecast Qty']=0;
       groups.set(key,g);
     }
     const g=groups.get(key);
-    numericCols.forEach(c=>g[c]=(Number(g[c])||0)+(Number(r[c])||0));
-    g['__rowCount'] += 1;
-    g['Forecast Qty'] += Number(r['Forecast Qty'] ?? (Number(r['L3M Avg Qty']||0) * (normalizePareto(r.Pareto)==='Top 10'?2:normalizePareto(r.Pareto)==='Top 25'?1.5:1))) || 0;
+    sourceCols.forEach(c=>{
+      if(numericCols.includes(c)) g[c]=(Number(g[c])||0)+(Number(r[c])||0);
+      else if((g[c]===undefined || g[c]===null || String(g[c]).trim()==='') && r[c]!==undefined) g[c]=r[c];
+    });
+    g['__rowCount']++;
   });
   return [...groups.values()].map(g=>{
     const avg=Number(g['L3M Avg Qty']||0);
     g.NOD=avg>0 ? Number(g.Stock||0)*31/avg : 0;
-    if(Object.prototype.hasOwnProperty.call(g,'NOD Bucket'))g['NOD Bucket']=nodBucket(g.NOD);
+    g['NOD Bucket']=nodBucket(g.NOD);
+    g['Forecast Qty']=Number(g['Forecast Qty']||0);
+    if(!g['Forecast Qty']){
+      const p=normalizePareto(g.Pareto);
+      const months=p==='Top 10'?2:p==='Top 25'?1.5:1;
+      g['Forecast Qty']=avg*months;
+    }
     return g;
   });
 }
 function aggregateSku(rows){
-  // SKU identity is EAN Code. Product Name is only the fallback for files without EAN.
-  if(DATA_COLUMNS.includes('EAN Code'))return aggregateBy(rows,'EAN Code');
-  return aggregateBy(rows,'Product Name');
+  // SKU Explorer = exactly one row per unique SKU/EAN.
+  // EAN is the primary SKU key; Product Name is the fallback only when EAN
+  // does not exist in the source Excel.
+  const key=DATA_COLUMNS.includes('EAN Code')?'EAN Code':'Product Name';
+  return aggregateBy(rows,key);
 }
-function aggregateStore(rows){return aggregateBy(rows,'Store Name')}
-function tableCols(rows){const source=DATA_COLUMNS.filter(c=>rows.some(r=>Object.prototype.hasOwnProperty.call(r,c)));return source.concat(rows.some(r=>Object.prototype.hasOwnProperty.call(r,'Forecast Qty'))&&!source.includes('Forecast Qty')?['Forecast Qty']:[])}
+function aggregateStore(rows){
+  // Store Analysis = exactly one row per unique outlet/store.
+  return aggregateBy(rows,'Store Name');
+}
+function tableCols(rows){
+  // The source Excel headers are authoritative and stay in the exact Excel
+  // sequence. Dashboard-calculated columns are appended only when required.
+  const source=DATA_COLUMNS.filter(c=>rows.some(r=>Object.prototype.hasOwnProperty.call(r,c)));
+  const extras=[];
+  if(rows.some(r=>Object.prototype.hasOwnProperty.call(r,'Forecast Qty')))extras.push('Forecast Qty');
+  if(rows.some(r=>Object.prototype.hasOwnProperty.call(r,'NOD')))extras.push('NOD');
+  if(rows.some(r=>Object.prototype.hasOwnProperty.call(r,'NOD Bucket')))extras.push('NOD Bucket');
+  return source.concat(extras.filter(c=>!source.includes(c)));
+}
 function comboSkuOption(id,arr,title){if(!arr.length){document.getElementById(id).innerHTML='<div class="empty">No SKUs available.</div>';return}let a=arr.slice().sort((x,y)=>(+y.Stock||0)-(+x.Stock||0)).slice(0,5);chart(id,{...base,animation:false,grid:{left:55,right:25,top:55,bottom:90,containLabel:true},tooltip:{trigger:'axis',axisPointer:{type:'shadow'},formatter:ps=>{let i=ps[0]?.dataIndex??0,x=a[i]||{};return `<b>${esc(x['Product Name'])}</b><br>Stock: ${qty(x.Stock)}<br>L3M Avg: ${qty(x['L3M Avg Qty'])}<br>CM: ${qty(x['Current Month Qty'])}<br>LY: ${qty(x['LY Qty'])}`}},legend:{show:true,top:5},xAxis:{type:'category',data:a.map(x=>x['Product Name']),axisLabel:{rotate:25,fontSize:9,interval:0,formatter:v=>String(v).length>20?String(v).slice(0,20)+'…':v}},yAxis:{type:'value',axisLabel:{formatter:qty}},series:[{name:'Stock Qty',type:'bar',data:a.map(x=>+x.Stock||0),barMaxWidth:32,label:{show:true,position:'top',formatter:q=>qty(q.value)}},{name:'L3M Avg',type:'line',data:a.map(x=>+x['L3M Avg Qty']||0),symbol:'circle',symbolSize:7},{name:'CM',type:'line',data:a.map(x=>+x['Current Month Qty']||0),symbol:'circle',symbolSize:7},{name:'LY',type:'line',data:a.map(x=>+x['LY Qty']||0),symbol:'circle',symbolSize:7}]},()=>openChartModal(title,arr))}
 function openChartModal(title,arr){let ov=document.getElementById('modalOverlay');document.getElementById('modalTitle').textContent=title+' — Full View';document.getElementById('modalSub').textContent=`${arr.length} SKUs • click/hover for exact values`;document.getElementById('modalBody').innerHTML=`<div class="modal-tools"><span class="muted">All SKUs shown below</span><span class="seg"><button id="mcQty" class="active">Qty</button><button id="mcVal">Value</button></span></div><div id="modalChart" class="modal-chart"></div>`;ov.classList.add('open');let mode='qty';function draw(){let a=arr;charts.forEach(c=>{try{if(c.getDom()?.id==='modalChart')c.dispose()}catch(_){}});let el=document.getElementById('modalChart');if(!el)return;let c=echarts.getInstanceByDom(el);if(c)c.dispose();c=echarts.init(el);c.setOption({...base,animation:false,grid:{left:75,right:55,top:85,bottom:125,containLabel:true},tooltip:{trigger:'axis',axisPointer:{type:'shadow'},formatter:ps=>{let i=ps[0]?.dataIndex??0,x=a[i]||{};return `<b>${esc(x['Product Name'])}</b><br>Stock: ${mode==='qty'?qty(x.Stock):moneyL(x['Total MRP Value'])}<br>L3M Avg: ${mode==='qty'?qty(x['L3M Avg Qty']):moneyL(x['L3M Avg Value'])}<br>CM: ${mode==='qty'?qty(x['Current Month Qty']):moneyL(x['Current Month Value'])}<br>LY: ${mode==='qty'?qty(x['LY Qty']):moneyL(x['LY Value'])}`}},legend:{show:true,top:8},dataZoom:[{type:'inside'},{type:'slider',bottom:18,height:18,start:0,end:100},],xAxis:{type:'category',data:a.map(x=>x['Product Name']),axisLabel:{rotate:35,interval:0,fontSize:10,formatter:v=>String(v).length>26?String(v).slice(0,26)+'…':v}},yAxis:{type:'value',axisLabel:{formatter:v=>mode==='qty'?qty(v):moneyL(v)}},series:[{name:mode==='qty'?'Stock Qty':'Stock Value',type:'bar',data:a.map(x=>mode==='qty'?+x.Stock||0:+x['Total MRP Value']||0),barMaxWidth:34,label:{show:true,position:'top',formatter:q=>mode==='qty'?qty(q.value):moneyL(q.value)}},{name:mode==='qty'?'L3M Avg Qty':'L3M Avg Value',type:'line',data:a.map(x=>mode==='qty'?+x['L3M Avg Qty']||0:+x['L3M Avg Value']||0),symbol:'circle',symbolSize:7,label:{show:true,position:'top',formatter:q=>mode==='qty'?qty(q.value):moneyL(q.value)}},{name:mode==='qty'?'CM Qty':'CM Value',type:'line',data:a.map(x=>mode==='qty'?+x['Current Month Qty']||0:+x['Current Month Value']||0),symbol:'circle',symbolSize:7,label:{show:true,position:'top',formatter:q=>mode==='qty'?qty(q.value):moneyL(q.value)}},{name:mode==='qty'?'LY Qty':'LY Value',type:'line',data:a.map(x=>mode==='qty'?+x['LY Qty']||0:+x['LY Value']||0),symbol:'circle',symbolSize:7,label:{show:true,position:'top',formatter:q=>mode==='qty'?qty(q.value):moneyL(q.value)}}]});c.resize();charts.push(c)}document.getElementById('mcQty').onclick=()=>{mode='qty';document.getElementById('mcQty').classList.add('active');document.getElementById('mcVal').classList.remove('active');requestAnimationFrame(draw)};document.getElementById('mcVal').onclick=()=>{mode='value';document.getElementById('mcVal').classList.add('active');document.getElementById('mcQty').classList.remove('active');requestAnimationFrame(draw)};requestAnimationFrame(()=>setTimeout(draw,30))}
 function products(){
-  let rows=aggregateSku(FILTERED);
-  let top10=rows.filter(x=>normalizePareto(x.Pareto)==='Top 10').sort((a,b)=>(+b.Stock||0)-(+a.Stock||0));
-  let top25=rows.filter(x=>normalizePareto(x.Pareto)==='Top 25').sort((a,b)=>(+b.Stock||0)-(+a.Stock||0));
-  let nc=nodCounts(rows);
+  const rows=aggregateSku(FILTERED);
+  const top10=rows.filter(x=>normalizePareto(x.Pareto)==='Top 10').sort((a,b)=>(+b.Stock||0)-(+a.Stock||0));
+  const top25=rows.filter(x=>normalizePareto(x.Pareto)==='Top 25').sort((a,b)=>(+b.Stock||0)-(+a.Stock||0));
+  const nc=nodCounts(rows);
   const cols=tableCols(rows);
-  document.getElementById('app').innerHTML=`<div class="kpis kpis-4">${kpi('Total Unique SKUs',qty(rows.length),'Filtered unique SKUs')}${kpi('Stock Qty',qty(sum(rows,'Stock')),'Current stock')}${kpi('Stock Value',moneyL(sum(rows,'Total MRP Value')),'Current MRP')}${kpi('NOD Count',qty(nc.total),'SKUs with valid L3M NOD')}</div><div class="kpis kpis-4">${kpi('NOD <15',qty(nc.lt15),'Critical','bad')}${kpi('NOD 15–30',qty(nc.n15_30),'Watch')}${kpi('NOD 31–60',qty(nc.n31_60),'Healthy')}${kpi('NOD >60',qty(nc.gt60),'Overstock','bad')}</div><div class="grid2"><div class="card clickable-card"><div class="card-title">Top 10 Pareto SKUs — Top 5 Preview <span class="muted">Click chart for all 10</span></div><div id="top10Chart" class="chart"></div></div><div class="card clickable-card"><div class="card-title">Top 25 Pareto SKUs — Top 5 Preview <span class="muted">Click chart for all 25</span></div><div id="top25Chart" class="chart"></div></div></div><div class="card"><div class="card-title">SKU Explorer <span class="muted">One row per unique SKU • click a row to see all outlets</span></div>${table(rows,cols,'products',100000,'EAN Code')}</div>`;
-  comboSkuOption('top10Chart',top10,'Top 10 Pareto SKUs');comboSkuOption('top25Chart',top25,'Top 25 Pareto SKUs');
-  document.querySelectorAll('table[data-sort-id="products"] tbody tr').forEach(tr=>tr.onclick=()=>{let key=tr.dataset.clickValue;let detail=FILTERED.filter(x=>String(x['EAN Code']??'').trim()===String(key).trim());if(!detail.length)detail=FILTERED.filter(x=>(x['Product Name']||'')===key);openDetailModal(key||'SKU','All outlet detail',detail,'sku')});
+  document.getElementById('app').innerHTML=`<div class="kpis kpis-4">${kpi('Total Unique SKUs',qty(rows.length),'One row per unique SKU')}${kpi('Stock Qty',qty(sum(rows,'Stock')),'Current stock')}${kpi('Stock Value',moneyL(sum(rows,'Total MRP Value')),'Current MRP')}${kpi('Valid NOD SKUs',qty(nc.total),'L3M-based NOD')}</div><div class="kpis kpis-4">${kpi('NOD <15',qty(nc.lt15),'SKU count','bad')}${kpi('NOD 15–30',qty(nc.n15_30),'SKU count')}${kpi('NOD 31–60',qty(nc.n31_60),'SKU count')}${kpi('NOD >60',qty(nc.gt60),'SKU count','bad')}</div><div class="grid2"><div class="card clickable-card"><div class="card-title">Top 10 Pareto SKUs — Top 5 Preview <span class="muted">Click chart for all 10</span></div><div id="top10Chart" class="chart"></div></div><div class="card clickable-card"><div class="card-title">Top 25 Pareto SKUs — Top 5 Preview <span class="muted">Click chart for all 25</span></div><div id="top25Chart" class="chart"></div></div></div><div class="card"><div class="card-title">SKU Explorer <span class="muted">${rows.length.toLocaleString('en-IN')} unique SKUs • click a row to see every outlet for that SKU</span></div>${table(rows,cols,'products',Infinity,'EAN Code')}</div>`;
+  comboSkuOption('top10Chart',top10,'Top 10 Pareto SKUs');
+  comboSkuOption('top25Chart',top25,'Top 25 Pareto SKUs');
+  document.querySelectorAll('table[data-sort-id="products"] tbody tr').forEach(tr=>tr.onclick=()=>{
+    const key=tr.dataset.clickValue;
+    let detail=FILTERED.filter(x=>String(x['EAN Code']??'').trim()===String(key).trim());
+    if(!detail.length)detail=FILTERED.filter(x=>String(x['Product Name']??'').trim()===String(key).trim());
+    if(detail.length)openDetailModal(detail[0]['Product Name']||key,'All outlets for this SKU',detail,'sku');
+  });
 }
+
 function stores(){
-  let rows=aggregateStore(FILTERED),skuRows=aggregateSku(FILTERED),nc=nodCounts(skuRows);
-  let top=rows.slice().sort((a,b)=>(+b.Stock||0)-(+a.Stock||0)).slice(0,15),mom=rows.slice().sort((a,b)=>Math.abs((+b['Current Month Qty']||0)-(+b['LY Qty']||0))-Math.abs((+a['Current Month Qty']||0)-(+a['LY Qty']||0))).slice(0,12),types=['EBO','Kiosk','Airport'];
-  document.getElementById('app').innerHTML=`<div class="kpis kpis-4">${kpi('Total Stores',qty(rows.filter(r=>String(r['Store Name']||'').trim()).length),'Filtered unique outlets')}${kpi('Stock Qty',qty(sum(rows,'Stock')),'Current stock')}${kpi('Stock Value',moneyL(sum(rows,'Total MRP Value')),'Current MRP')}${kpi('L3M Avg Qty',qty(sum(rows,'L3M Avg Qty')),'Run rate')}</div><div class="kpis kpis-4">${kpi('Current Month Qty',qty(sum(rows,'Current Month Qty')),'Current month')}${kpi('LY Qty',qty(sum(rows,'LY Qty')),'Last year')}${kpi('NOD Count',qty(nc.total),'SKUs with valid L3M NOD')}${kpi('CM vs L3M',pct1(sum(rows,'L3M Avg Qty')?sum(rows,'Current Month Qty')/sum(rows,'L3M Avg Qty')*100-100:0),'Sales movement')}</div><div class="kpis kpis-4">${kpi('NOD <15',qty(nc.lt15),'SKU count','bad')}${kpi('NOD 15–30',qty(nc.n15_30),'SKU count')}${kpi('NOD 31–60',qty(nc.n31_60),'SKU count')}${kpi('NOD >60',qty(nc.gt60),'SKU count','bad')}</div><div class="grid2"><div class="card"><div class="card-title">Store Stock vs Sales Run Rate — Top 15</div><div id="storePerfChart" class="chart chart-tall"></div></div><div class="card"><div class="card-title">Store Sales Momentum — Top 12</div><div id="storeMomentumChart" class="chart chart-tall"></div></div></div><div class="grid2"><div class="card"><div class="card-title">Store NOD Distribution</div><div id="storeNodChart" class="chart"></div></div><div class="card"><div class="card-title">Type-wise Store Performance</div><div id="storeTypeChart" class="chart"></div></div></div><div class="card"><div class="card-title">Store Analysis <span class="muted">One row per unique outlet • click a row to see all SKUs</span></div>${table(rows,tableCols(rows),'stores',100000,'Store Name')}</div>`;
-  let topR=top.slice().reverse();
-  chart('storePerfChart',{...base,legend:{show:true,top:5},dataZoom:[{type:'inside'},{type:'slider',bottom:8,height:16}],xAxis:{type:'value',axisLabel:{formatter:qty}},yAxis:{type:'category',data:topR.map(x=>x['Store Name']),axisLabel:{fontSize:9}},series:[{name:'Stock',type:'bar',data:topR.map(x=>x.Stock),label:{show:true,position:'right',formatter:q=>qty(q.value)}},{name:'L3M Avg',type:'bar',data:topR.map(x=>x['L3M Avg Qty']),label:{show:true,position:'right',formatter:q=>qty(q.value)}},{name:'CM',type:'bar',data:topR.map(x=>x['Current Month Qty']),label:{show:true,position:'right',formatter:q=>qty(q.value)}}]});
-  chart('storeMomentumChart',{...base,legend:{show:true,top:5},dataZoom:[{type:'inside'},{type:'slider',bottom:8,height:16}],xAxis:{type:'category',data:mom.map(x=>x['Store Name']),axisLabel:{rotate:28,fontSize:9,interval:0,formatter:v=>String(v).length>18?String(v).slice(0,18)+'…':v}},yAxis:{type:'value',axisLabel:{formatter:qty}},series:[{name:'LY',type:'line',data:mom.map(x=>x['LY Qty']),symbol:'circle',symbolSize:7,label:{show:true,position:'top',formatter:q=>qty(q.value)}},{name:'L3M Avg',type:'line',data:mom.map(x=>x['L3M Avg Qty']),symbol:'circle',symbolSize:7,label:{show:true,position:'top',formatter:q=>qty(q.value)}},{name:'CM',type:'line',data:mom.map(x=>x['Current Month Qty']),symbol:'circle',symbolSize:7,label:{show:true,position:'top',formatter:q=>qty(q.value)}}]});
-  let buckets={'NOD <15':nc.lt15,'NOD 15–30':nc.n15_30,'NOD 31–60':nc.n31_60,'NOD >60':nc.gt60};chart('storeNodChart',{...base,xAxis:{type:'category',data:Object.keys(buckets)},yAxis:{type:'value',axisLabel:{formatter:qty}},series:[{name:'SKUs',type:'bar',data:Object.values(buckets),barMaxWidth:55,label:{show:true,position:'top',formatter:q=>qty(q.value)}}]});
-  let tm={};FILTERED.forEach(r=>{let t=canonicalType(r.Type);tm[t]??={stock:0,l3m:0,cm:0,ly:0};tm[t].stock+=+r.Stock||0;tm[t].l3m+=+r['L3M Avg Qty']||0;tm[t].cm+=+r['Current Month Qty']||0;tm[t].ly+=+r['LY Qty']||0});types.forEach(t=>tm[t]??={stock:0,l3m:0,cm:0,ly:0});
+  const rows=aggregateStore(FILTERED);
+  const skuRows=aggregateSku(FILTERED);
+  const nc=nodCounts(skuRows);
+  const top=rows.slice().sort((a,b)=>(+b.Stock||0)-(+a.Stock||0)).slice(0,15);
+  const mom=rows.slice().sort((a,b)=>Math.abs((+b['Current Month Qty']||0)-(+b['LY Qty']||0))-Math.abs((+a['Current Month Qty']||0)-(+a['LY Qty']||0))).slice(0,12);
+  const types=['EBO','Kiosk','Airport'];
+  const cols=tableCols(rows);
+  document.getElementById('app').innerHTML=`<div class="kpis kpis-4">${kpi('Total Stores',qty(rows.length),'One row per unique outlet')}${kpi('Stock Qty',qty(sum(rows,'Stock')),'Current stock')}${kpi('Stock Value',moneyL(sum(rows,'Total MRP Value')),'Current MRP')}${kpi('L3M Avg Qty',qty(sum(rows,'L3M Avg Qty')),'Run rate')}</div><div class="kpis kpis-4">${kpi('Current Month Qty',qty(sum(rows,'Current Month Qty')),'Current month')}${kpi('LY Qty',qty(sum(rows,'LY Qty')),'Last year')}${kpi('Valid NOD SKUs',qty(nc.total),'L3M-based NOD')}${kpi('CM vs L3M',pct1(sum(rows,'L3M Avg Qty')?sum(rows,'Current Month Qty')/sum(rows,'L3M Avg Qty')*100-100:0),'Sales movement')}</div><div class="kpis kpis-4">${kpi('NOD <15',qty(nc.lt15),'SKU count','bad')}${kpi('NOD 15–30',qty(nc.n15_30),'SKU count')}${kpi('NOD 31–60',qty(nc.n31_60),'SKU count')}${kpi('NOD >60',qty(nc.gt60),'SKU count','bad')}</div><div class="grid2"><div class="card"><div class="card-title">Store Stock vs Sales Run Rate — Top 15</div><div id="storePerfChart" class="chart chart-tall"></div></div><div class="card"><div class="card-title">Store Sales Momentum — Top 12</div><div id="storeMomentumChart" class="chart chart-tall"></div></div></div><div class="grid2"><div class="card"><div class="card-title">Store NOD Distribution</div><div id="storeNodChart" class="chart"></div></div><div class="card"><div class="card-title">Type-wise Store Performance</div><div id="storeTypeChart" class="chart"></div></div></div><div class="card"><div class="card-title">Store Analysis <span class="muted">${rows.length.toLocaleString('en-IN')} unique outlets • click a row to see every SKU in that outlet</span></div>${table(rows,cols,'stores',Infinity,'Store Name')}</div>`;
+  const topR=top.slice().reverse();
+  chart('storePerfChart',{...base,legend:{show:true,top:5},dataZoom:[{type:'inside'},{type:'slider',bottom:8,height:16}],xAxis:{type:'value',axisLabel:{formatter:qty}},yAxis:{type:'category',data:topR.map(x=>x['Store Name']),axisLabel:{fontSize:9}},series:[{name:'Stock',type:'bar',data:topR.map(x=>+x.Stock||0),label:{show:true,position:'right',formatter:q=>qty(q.value)}},{name:'L3M Avg',type:'bar',data:topR.map(x=>+x['L3M Avg Qty']||0),label:{show:true,position:'right',formatter:q=>qty(q.value)}},{name:'CM',type:'bar',data:topR.map(x=>+x['Current Month Qty']||0),label:{show:true,position:'right',formatter:q=>qty(q.value)}}]});
+  chart('storeMomentumChart',{...base,legend:{show:true,top:5},dataZoom:[{type:'inside'},{type:'slider',bottom:8,height:16}],xAxis:{type:'category',data:mom.map(x=>x['Store Name']),axisLabel:{rotate:28,fontSize:9,interval:0,formatter:v=>String(v).length>18?String(v).slice(0,18)+'…':v}},yAxis:{type:'value',axisLabel:{formatter:qty}},series:[{name:'LY',type:'line',data:mom.map(x=>+x['LY Qty']||0),symbol:'circle',symbolSize:7,label:{show:true,position:'top',formatter:q=>qty(q.value)}},{name:'L3M Avg',type:'line',data:mom.map(x=>+x['L3M Avg Qty']||0),symbol:'circle',symbolSize:7,label:{show:true,position:'top',formatter:q=>qty(q.value)}},{name:'CM',type:'line',data:mom.map(x=>+x['Current Month Qty']||0),symbol:'circle',symbolSize:7,label:{show:true,position:'top',formatter:q=>qty(q.value)}}]});
+  const buckets={'NOD <15':nc.lt15,'NOD 15–30':nc.n15_30,'NOD 31–60':nc.n31_60,'NOD >60':nc.gt60};
+  chart('storeNodChart',{...base,xAxis:{type:'category',data:Object.keys(buckets)},yAxis:{type:'value',axisLabel:{formatter:qty}},series:[{name:'SKUs',type:'bar',data:Object.values(buckets),barMaxWidth:55,label:{show:true,position:'top',formatter:q=>qty(q.value)}}]});
+  const tm={}; FILTERED.forEach(r=>{const t=canonicalType(r.Type);tm[t]??={stock:0,l3m:0,cm:0,ly:0};tm[t].stock+=+r.Stock||0;tm[t].l3m+=+r['L3M Avg Qty']||0;tm[t].cm+=+r['Current Month Qty']||0;tm[t].ly+=+r['LY Qty']||0}); types.forEach(t=>tm[t]??={stock:0,l3m:0,cm:0,ly:0});
   chart('storeTypeChart',{...base,legend:{show:true,top:5},xAxis:{type:'category',data:types},yAxis:{type:'value',axisLabel:{formatter:qty}},series:[{name:'Stock',type:'bar',data:types.map(t=>tm[t].stock),label:{show:true,position:'top',formatter:q=>qty(q.value)}},{name:'L3M Avg',type:'line',data:types.map(t=>tm[t].l3m),symbol:'circle',symbolSize:7,label:{show:true,position:'top',formatter:q=>qty(q.value)}},{name:'CM',type:'line',data:types.map(t=>tm[t].cm),symbol:'circle',symbolSize:7,label:{show:true,position:'top',formatter:q=>qty(q.value)}},{name:'LY',type:'line',data:types.map(t=>tm[t].ly),symbol:'circle',symbolSize:7,label:{show:true,position:'top',formatter:q=>qty(q.value)}}]});
-  document.querySelectorAll('table[data-sort-id="stores"] tbody tr').forEach(tr=>tr.onclick=()=>{let store=tr.dataset.clickValue;let detail=FILTERED.filter(r=>String(r['Store Name']??'').trim()===String(store).trim());openDetailModal(store||'Store','All SKU detail',detail,'store')});
+  document.querySelectorAll('table[data-sort-id="stores"] tbody tr').forEach(tr=>tr.onclick=()=>{const store=tr.dataset.clickValue;const detail=FILTERED.filter(r=>String(r['Store Name']??'').trim()===String(store).trim());if(detail.length)openDetailModal(store,'All SKUs in this outlet',detail,'store')});
 }
+
 function dataTable(){document.getElementById('app').innerHTML=`<div class="card"><div class="card-title">Complete Data Table</div>${table(FILTERED,tableCols(FILTERED),'datatable',100000)}</div>`}
 function openDetailModal(title,sub,rows,mode){let ov=document.getElementById('modalOverlay');document.getElementById('modalTitle').textContent=title;document.getElementById('modalSub').textContent=sub;document.getElementById('modalBody').innerHTML=`<div class="modal-filters"><input id="modalSearch" placeholder="Search SKU / EAN / Product / Shop…"><select id="modalFilter"><option value="">All ${mode==='sku'?'Shops':'SKUs'}</option></select></div><div id="modalTable"></div>`;let opts=mode==='sku'?[...new Set(rows.map(r=>r['Store Name']))]:[...new Set(rows.map(r=>r['Product Name']))];document.getElementById('modalFilter').innerHTML+=opts.sort().map(x=>`<option value="${esc(x)}">${esc(x)}</option>`).join('');let cols=tableCols(rows);function draw(){let q=(document.getElementById('modalSearch').value||'').toLowerCase(),f=document.getElementById('modalFilter').value;let rr=rows.filter(r=>!q||String(r['Product Name']).toLowerCase().includes(q)||String(r['EAN Code']).toLowerCase().includes(q)||String(r['Store Name']).toLowerCase().includes(q)).filter(r=>!f||(mode==='sku'?r['Store Name']===f:r['Product Name']===f));document.getElementById('modalTable').innerHTML=table(rr,cols,'modal',2000)}document.getElementById('modalSearch').oninput=draw;document.getElementById('modalFilter').onchange=draw;draw();ov.classList.add('open')}
 async function loadStock(force=false){let q=new URLSearchParams({_ts:Date.now()});if(force)q.set('refresh','1');let r=await fetch('/api/data?'+q,{cache:'no-store'}),j=await r.json();if(!j.ok)throw Error(j.error);DATA_COLUMNS=j.source_columns||j.columns||[];DATA=j.records.map(r=>({...r,Type:canonicalType(r.Type),Pareto:normalizePareto(r.Pareto),NOD:(Number(r['L3M Avg Qty']||0)>0?(Number(r.Stock||0)*31/Number(r['L3M Avg Qty']||1)):0)}));DATA=DATA.map(r=>({...r,'NOD Bucket':nodBucket(r.NOD)}));document.getElementById('sourceBadge').textContent=`${j.source} • ${j.rows.toLocaleString('en-IN')} rows`;renderFilters();render()}
