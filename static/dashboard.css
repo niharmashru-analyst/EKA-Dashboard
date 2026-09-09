@@ -131,3 +131,13 @@ table thead th.eka-sort-desc::after {
 .rank-detail-table table{min-width:1100px}
 .rank-detail-table th{position:sticky;top:0;z-index:2;white-space:nowrap}
 .rank-detail-table td{white-space:nowrap}
+
+/* ===== RENEE Field Entry branding ===== */
+.entry-brand .brand-name{color:#172033 !important;font-weight:800}.entry-brand .brand-name span{color:#2563EB !important}.entry-brand .brand-sub{color:#64748B !important}.entry-brand .brand-mark{background:#2563EB !important}
+
+/* Entry page RENEE branding */
+.entry-brand .brand-name{color:#172033 !important;font-weight:800 !important}
+.entry-brand .brand-name .brand-renee{color:#2563EB !important}
+.entry-brand .brand-name .brand-dot{color:#2563EB !important}
+.entry-brand .brand-sub{color:#64748B !important}
+.entry-brand .brand-mark{background:#2563EB !important}

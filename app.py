@@ -36,14 +36,36 @@ SUBMISSION_API_SECRET = os.getenv("SUBMISSION_API_SECRET", "").strip()
 DATABASE_PATH = os.getenv("DATABASE_PATH", os.path.join(app.root_path, "data", "submissions.db"))
 
 # --- Email notification on submission (Stock Verification PDF) ---
-SMTP_HOST = os.getenv("SMTP_HOST", "").strip()
+# SMTP email configuration. Gmail is the default host so Render only needs
+# SMTP_USER + SMTP_PASS (or PASS_KEY / EMAIL_PASS_KEY) + NOTIFY_EMAIL.
+SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com").strip()
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587") or 587)
-SMTP_USER = os.getenv("SMTP_USER", "").strip()
-SMTP_PASS = os.getenv("SMTP_PASS", "").strip()
-SMTP_FROM_NAME = os.getenv("SMTP_FROM_NAME", "RENEE E.K.A. ANALYTICS Field Entry").strip()
-NOTIFY_EMAIL = os.getenv("NOTIFY_EMAIL", "").strip()          # comma-separated recipients, e.g. "you@company.com,boss@company.com"
-CC_SUBMITTER = os.getenv("CC_SUBMITTER", "0").strip() == "1"   # also CC the field-staff email that submitted
-EMAIL_ENABLED = bool(SMTP_HOST and SMTP_USER and SMTP_PASS and NOTIFY_EMAIL)
+SMTP_USER = (
+    os.getenv("SMTP_USER", "")
+    or os.getenv("EMAIL_USER", "")
+    or os.getenv("GMAIL_USER", "")
+    or os.getenv("GMAIL_EMAIL", "")
+    or os.getenv("EMAIL_FROM", "")
+    or os.getenv("MAIL_USERNAME", "")
+).strip()
+SMTP_PASS = (
+    os.getenv("SMTP_PASS", "")
+    or os.getenv("PASS_KEY", "")
+    or os.getenv("EMAIL_PASS_KEY", "")
+    or os.getenv("EMAIL_APP_PASSWORD", "")
+    or os.getenv("GMAIL_APP_PASSWORD", "")
+).strip()
+SMTP_FROM_NAME = os.getenv("SMTP_FROM_NAME", "RENEE E.K.A. FIELD STOCK ENTRY").strip()
+# Comma-separated office recipients. If omitted, send to the SMTP account itself.
+NOTIFY_EMAIL = (
+    os.getenv("NOTIFY_EMAIL", "")
+    or os.getenv("NOTIFY_TO", "")
+    or os.getenv("OFFICE_EMAIL", "")
+    or SMTP_USER
+).strip()
+CC_SUBMITTER = os.getenv("CC_SUBMITTER", "0").strip() == "1"
+EMAIL_SSL = os.getenv("SMTP_SSL", "0").strip() == "1"
+EMAIL_ENABLED = bool(SMTP_USER and SMTP_PASS and NOTIFY_EMAIL)
 
 STOCK_REQUIRED = ["Type","Store Name","EAN Code","Product Name","Pareto","Stock","Total MRP Value","L3M Avg Qty","L3M Avg Value","NOD"]
 STOCK_OPTIONAL_METRICS = ["LY Qty","LY Value","Current Month Qty","Current Month Value"]
@@ -420,13 +442,20 @@ def send_submission_email(email, store, rows, ts, pdf_bytes):
     msg.attach(part)
 
     try:
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as server:
-            server.starttls()
-            server.login(SMTP_USER, SMTP_PASS)
-            server.sendmail(SMTP_USER, to_list, msg.as_string())
+        if EMAIL_SSL:
+            with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=20) as server:
+                server.login(SMTP_USER, SMTP_PASS)
+                server.sendmail(SMTP_USER, to_list, msg.as_string())
+        else:
+            with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as server:
+                server.ehlo()
+                server.starttls()
+                server.ehlo()
+                server.login(SMTP_USER, SMTP_PASS)
+                server.sendmail(SMTP_USER, to_list, msg.as_string())
         return {"sent": True, "to": to_list}
     except Exception as e:
-        return {"sent": False, "reason": str(e)}
+        return {"sent": False, "reason": f"SMTP error: {type(e).__name__}: {e}"}
 
 
 def notify_submission(email, store, rows):

@@ -206,10 +206,12 @@ async function submitAll() {
     const j = await getJson('/api/submit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     const saved = Number(j.saved_rows || 0);
     lastSubmission = { email, store: selectedStore, rows: enteredRows, savedRows: saved, timestamp: new Date() };
-    const emailSent = j.email && j.email.sent;
-    const emailNote = emailSent ? ' A copy has also been emailed to the office automatically.' : '';
+    const emailSent = !!(j.email && j.email.sent);
+    const emailNote = emailSent
+      ? ' Email notification sent successfully.'
+      : ` Submission was saved, but email was not sent${j.email?.reason ? `: ${j.email.reason}` : '.'}`;
     showPopup('Submission Successful', `${saved.toLocaleString('en-IN')} SKU rows were submitted successfully for ${selectedStore}.${emailNote}`, true, true);
-    msg(`${saved.toLocaleString('en-IN')} SKU rows submitted successfully.`, true);
+    msg(`${saved.toLocaleString('en-IN')} SKU rows submitted successfully.${emailSent ? ' Email sent.' : ' Email not sent — check the email settings on Render.'}`, emailSent);
     rows.forEach(r => { r.stock = 0; r.tester = 0; });
     currentPage = 1;
     render();

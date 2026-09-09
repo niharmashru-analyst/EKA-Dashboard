@@ -34,6 +34,11 @@ Required:
 - `EXCEL_URL`
 - `SUBMISSION_API_URL`
 - `SUBMISSION_API_SECRET`
+- `SMTP_USER` — Gmail/Google Workspace account used to send submission emails
+- `PASS_KEY` — Gmail App Password for `SMTP_USER` (or use `SMTP_PASS`)
+- `NOTIFY_EMAIL` — office recipient email; if omitted, email is sent to `SMTP_USER`
+
+**Important:** `PASS_KEY` alone is not enough. Render must also know which mailbox to authenticate (`SMTP_USER`) and where to send the notification (`NOTIFY_EMAIL`).
 
 Optional:
 - `EXCEL_SHEET=Stock_Data`
