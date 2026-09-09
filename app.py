@@ -206,7 +206,12 @@ def merge_variance_actuals(var, stock):
         subs["__key"] = subs["store_name"].fillna("").astype(str).str.strip() + "|" + subs["ean_code"].fillna("").astype(str).str.strip()
         subs["total"] = pd.to_numeric(subs["total"], errors="coerce").fillna(0)
         subs = subs.sort_values("submitted_at").drop_duplicates("__key", keep="last")
-        sub = subs[["__key","product_name","total"]].rename(columns={"product_name":"__Submitted Product Name","total":"Actual Closing Qty"})
+        # Only merge the submitted quantity here. Avoid carrying the temporary
+        # submitted product-name column through the variance frame; that column
+        # was causing the Variance Analysis response to fail when column names
+        # differed or collided. The movement workbook remains the source of the
+        # product name for existing SKUs.
+        sub = subs[["__key","total"]].rename(columns={"total":"Actual Closing Qty"})
         out = out.merge(sub, on="__key", how="left")
     else:
         out["Actual Closing Qty"] = pd.NA
@@ -223,7 +228,10 @@ def merge_variance_actuals(var, stock):
         if not extra.empty:
             extra["Store Name"] = extra["__key"].str.rsplit("|", n=1).str[0]
             extra["EAN Code"] = extra["__key"].str.rsplit("|", n=1).str[1]
-            extra["Product Name"] = extra["__Submitted Product Name"]
+            # Recover the submitted product name only for SKUs absent from the
+            # movement workbook.
+            name_map = subs.set_index("__key")["product_name"].to_dict() if "product_name" in subs.columns else {}
+            extra["Product Name"] = extra["__key"].map(name_map).fillna("")
             extra["Opening Stock Qty"] = 0; extra["Inward Qty"] = 0; extra["Tertiary Qty"] = 0; extra["Closing Stock Qty"] = 0
             extra["Calculated Closing Qty"] = 0; extra["Movement Check Qty"] = False; extra["Movement Check"] = False
             extra["System Stock Qty"] = 0
@@ -361,6 +369,75 @@ def submit():
         saved=save_local_submission(payload)
         return jsonify({"ok":True,"message":"Stock submitted successfully.","saved_rows":saved})
     except Exception as e: return jsonify({"ok":False,"error":str(e)}),500
+
+@app.post("/api/entry-report-data")
+def entry_report_data():
+    """Return the quantity-only data needed to build the two post-submission PDFs."""
+    try:
+        payload=request.get_json(force=True) or {}
+        email=str(payload.get("email","")).strip().lower()
+        store=str(payload.get("store_name","")).strip()
+        rows=payload.get("rows",[]) or []
+        if not email or not store:
+            return jsonify({"ok":False,"error":"Email and shop are required."}),400
+
+        mp,_=load_entry_sources(False)
+        allowed=set(mp.loc[mp["Email ID"]==email,"Store Name"])
+        if store not in allowed:
+            return jsonify({"ok":False,"error":"This email is not mapped to the selected shop."}),403
+
+        stock=load_stock(False)
+        var=load_variance(False)
+
+        # Submitted physical quantities keyed by Store + EAN.
+        submitted={}
+        for r in rows:
+            ean=str(r.get("EAN Code","")).strip()
+            if not ean: continue
+            physical=max(0.0,float(r.get("Total",0) or 0))
+            name=str(r.get("Product Name","")).strip()
+            submitted[ean]={"Product Name":name,"Physical Stock":physical,"Stock Qty":max(0.0,float(r.get("Stock",0) or 0)),"Tester Qty":max(0.0,float(r.get("Tester",0) or 0))}
+
+        st=stock[stock["Store Name"].astype(str).str.strip()==store].copy()
+        st["EAN Code"]=st["EAN Code"].astype(str).str.strip()
+        st=st.drop_duplicates("EAN Code",keep="last")
+        st_map=st.set_index("EAN Code").to_dict("index")
+
+        vv=var[var["Store Name"].astype(str).str.strip()==store].copy()
+        vv["EAN Code"]=vv["EAN Code"].astype(str).str.strip()
+        vv=vv.drop_duplicates("EAN Code",keep="last")
+        var_map=vv.set_index("EAN Code").to_dict("index")
+
+        # Use the submitted rows as the authoritative SKU list so every SKU the
+        # store entered appears in both PDFs.
+        report=[]
+        for ean,x in submitted.items():
+            sr=st_map.get(ean,{})
+            vr=var_map.get(ean,{})
+            physical=x["Physical Stock"]
+            system=float(sr.get("Stock",0) or 0)
+            opening=float(vr.get("Opening Stock Qty",0) or 0)
+            inward=float(vr.get("Inward Qty",0) or 0)
+            tertiary=float(vr.get("Tertiary Qty",0) or 0)
+            movement_closing=float(vr.get("Closing Stock Qty",0) or 0)
+            report.append({
+                "EAN Code":ean,
+                "Product Name":str(sr.get("Product Name") or vr.get("Product Name") or x["Product Name"] or ""),
+                "Opening Stock":opening,
+                "Inward":inward,
+                "Tertiary":tertiary,
+                "Movement Closing":movement_closing,
+                "System Stock":system,
+                "Physical Stock":physical,
+                "Variance":physical-system,
+                "Stock Qty":x["Stock Qty"],
+                "Tester Qty":x["Tester Qty"],
+                "Total Qty":physical,
+            })
+
+        return jsonify({"ok":True,"store":store,"email":email,"rows":report})
+    except Exception as e:
+        return jsonify({"ok":False,"error":str(e)}),500
 
 @app.get("/api/submissions")
 def submissions():
