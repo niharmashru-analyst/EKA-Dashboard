@@ -186,8 +186,19 @@ def load_submissions_live():
         return pd.DataFrame()
 
 def merge_variance_actuals(var, stock):
-    """Fast quantity-only variance merge. Uses vectorized pandas joins instead of row-by-row loops."""
+    """Fast quantity-only variance merge. Uses vectorized pandas joins instead of row-by-row loops.
+
+    The movement workbook is the source for movement fields; live submissions are
+    the source for physical/actual closing quantity. Remove any stale actual
+    submission fields from the movement frame first so pandas cannot create
+    _x/_y collisions that later cause KeyError: 'Actual Closing Qty'.
+    """
     out = var.copy()
+    # Defensive cleanup for older Variance_Data sheets that already contain
+    # submission-derived columns. These are rebuilt below from live submissions.
+    for c in ["Actual Closing Qty", "Difference Qty", "Live Submission"]:
+        if c in out.columns:
+            out = out.drop(columns=[c])
     out["__key"] = out["Store Name"].astype(str).str.strip() + "|" + out["EAN Code"].astype(str).str.strip()
 
     # Current system stock by Store + EAN.
