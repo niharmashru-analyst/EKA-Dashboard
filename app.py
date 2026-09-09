@@ -40,7 +40,7 @@ SMTP_HOST = os.getenv("SMTP_HOST", "").strip()
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587") or 587)
 SMTP_USER = os.getenv("SMTP_USER", "").strip()
 SMTP_PASS = os.getenv("SMTP_PASS", "").strip()
-SMTP_FROM_NAME = os.getenv("SMTP_FROM_NAME", "RENEE EKA ANALYTICS Field Entry").strip()
+SMTP_FROM_NAME = os.getenv("SMTP_FROM_NAME", "RENEE E.K.A. ANALYTICS Field Entry").strip()
 NOTIFY_EMAIL = os.getenv("NOTIFY_EMAIL", "").strip()          # comma-separated recipients, e.g. "you@company.com,boss@company.com"
 CC_SUBMITTER = os.getenv("CC_SUBMITTER", "0").strip() == "1"   # also CC the field-staff email that submitted
 EMAIL_ENABLED = bool(SMTP_HOST and SMTP_USER and SMTP_PASS and NOTIFY_EMAIL)
