@@ -130,7 +130,7 @@ def clean_variance(df):
     # Stock Variance compares the movement-derived closing stock with the
     # Closing Stock Qty supplied in Variance_Data. Positive = Closing Stock
     # Qty is higher than the calculated closing; negative = lower.
-    df["Stock Variance Qty"] = df["Closing Stock Qty"] - df["Calculated Closing Qty"]
+    df["Stock Variance Qty"] = df["Calculated Closing Qty"] - df["Closing Stock Qty"]
     return df
 
 
