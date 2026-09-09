@@ -124,3 +124,10 @@ table thead th.eka-sort-desc::after {
   content: " ↓";
   opacity: .85;
 }
+
+.rank-detail-wrap{margin-top:18px;border-top:1px solid #E7EDF5;padding-top:14px}
+.rank-detail-title{margin-bottom:10px}
+.rank-detail-table{max-height:420px;overflow:auto}
+.rank-detail-table table{min-width:1100px}
+.rank-detail-table th{position:sticky;top:0;z-index:2;white-space:nowrap}
+.rank-detail-table td{white-space:nowrap}
