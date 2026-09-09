@@ -35,37 +35,6 @@ SUBMISSION_API_URL = os.getenv("SUBMISSION_API_URL", "").strip()
 SUBMISSION_API_SECRET = os.getenv("SUBMISSION_API_SECRET", "").strip()
 DATABASE_PATH = os.getenv("DATABASE_PATH", os.path.join(app.root_path, "data", "submissions.db"))
 
-# --- Email notification on submission (Stock Verification PDF) ---
-# SMTP email configuration. Gmail is the default host so Render only needs
-# SMTP_USER + SMTP_PASS (or PASS_KEY / EMAIL_PASS_KEY) + NOTIFY_EMAIL.
-SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com").strip()
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587") or 587)
-SMTP_USER = (
-    os.getenv("SMTP_USER", "")
-    or os.getenv("EMAIL_USER", "")
-    or os.getenv("GMAIL_USER", "")
-    or os.getenv("GMAIL_EMAIL", "")
-    or os.getenv("EMAIL_FROM", "")
-    or os.getenv("MAIL_USERNAME", "")
-).strip()
-SMTP_PASS = (
-    os.getenv("SMTP_PASS", "")
-    or os.getenv("PASS_KEY", "")
-    or os.getenv("EMAIL_PASS_KEY", "")
-    or os.getenv("EMAIL_APP_PASSWORD", "")
-    or os.getenv("GMAIL_APP_PASSWORD", "")
-).strip()
-SMTP_FROM_NAME = os.getenv("SMTP_FROM_NAME", "RENEE E.K.A. FIELD STOCK ENTRY").strip()
-# The person who submits is always the primary recipient.
-# Optional NOTIFY_EMAIL / OFFICE_EMAIL values are treated as CC recipients.
-NOTIFY_EMAIL = (
-    os.getenv("NOTIFY_EMAIL", "")
-    or os.getenv("NOTIFY_TO", "")
-    or os.getenv("OFFICE_EMAIL", "")
-).strip()
-EMAIL_SSL = os.getenv("SMTP_SSL", "0").strip() == "1"
-EMAIL_ENABLED = bool(SMTP_USER and SMTP_PASS)
-
 STOCK_REQUIRED = ["Type","Store Name","EAN Code","Product Name","Pareto","Stock","Total MRP Value","L3M Avg Qty","L3M Avg Value","NOD"]
 STOCK_OPTIONAL_METRICS = ["LY Qty","LY Value","Current Month Qty","Current Month Value"]
 VAR_REQUIRED = ["Store Name","EAN Code","Product Name","Opening Stock Qty","Inward Qty","Tertiary Qty","Closing Stock Qty","Opening Stock Value","Inward Value","Tertiary Value","Closing Stock Value"]
@@ -333,147 +302,6 @@ def remote_request(method, payload=None):
     r.raise_for_status(); return r.json()
 
 
-def build_stock_verification_pdf(email, store, rows, ts):
-    """Builds the same 'Stock Verification Report' as the client-side PDF, so a copy always
-    reaches the office by email even if the field user forgets to tap Download PDF."""
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib import colors
-    from reportlab.lib.units import mm
-    from reportlab.lib.enums import TA_RIGHT
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-
-    buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=14*mm, rightMargin=14*mm, topMargin=14*mm, bottomMargin=16*mm)
-    styles = getSampleStyleSheet()
-    brand_style = ParagraphStyle("brand", parent=styles["Normal"], fontSize=13, textColor=colors.HexColor("#172033"), fontName="Helvetica-Bold", leading=16)
-    title_style = ParagraphStyle("title", parent=styles["Normal"], fontSize=17, textColor=colors.HexColor("#172033"), fontName="Helvetica-Bold", alignment=TA_RIGHT, leading=20)
-    detail_style = ParagraphStyle("detail", parent=styles["Normal"], fontSize=9.5, textColor=colors.HexColor("#172033"))
-
-    elements = []
-    header_tbl = Table([[
-        Paragraph("SKU &bull; 360<br/><font size=7 color='#64748B'>FIELD STOCK ENTRY</font>", brand_style),
-        Paragraph("Stock Verification Report<br/><font size=7 color='#64748B'>Generated from field stock submission</font>", title_style),
-    ]], colWidths=[90*mm, 92*mm])
-    header_tbl.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
-    elements.append(header_tbl)
-    elements.append(Spacer(1, 6*mm))
-
-    total_stock = sum(float(r.get("Stock", 0) or 0) for r in rows)
-    total_tester = sum(float(r.get("Tester", 0) or 0) for r in rows)
-    date_str, time_str = ts.strftime("%d %b %Y"), ts.strftime("%I:%M %p")
-
-    details = [
-        [Paragraph(f"<b>Shop / Store:</b> {store}", detail_style), Paragraph(f"<b>Submitted By:</b> {email}", detail_style)],
-        [Paragraph(f"<b>Date &amp; Time:</b> {date_str}, {time_str}", detail_style), Paragraph(f"<b>SKUs Submitted:</b> {len(rows)}", detail_style)],
-    ]
-    dtbl = Table(details, colWidths=[91*mm, 91*mm])
-    dtbl.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("BOTTOMPADDING", (0, 0), (-1, -1), 4)]))
-    elements.append(dtbl)
-    elements.append(Spacer(1, 4*mm))
-
-    data = [["#", "EAN / SKU Code", "Product Name", "Stock Qty", "Tester Qty", "Total Qty"]]
-    for i, r in enumerate(rows, start=1):
-        s, t = float(r.get("Stock", 0) or 0), float(r.get("Tester", 0) or 0)
-        data.append([str(i), str(r.get("EAN Code", "")), str(r.get("Product Name", "")), f"{s:g}", f"{t:g}", f"{s+t:g}"])
-    data.append(["", "", "Total", f"{total_stock:g}", f"{total_tester:g}", f"{total_stock+total_tester:g}"])
-
-    table = Table(data, colWidths=[8*mm, 30*mm, 82*mm, 22*mm, 22*mm, 24*mm], repeatRows=1)
-    table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#172033")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
-        ("ALIGN", (3, 1), (-1, -1), "RIGHT"),
-        ("ALIGN", (0, 1), (0, -1), "CENTER"),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -2), [colors.white, colors.HexColor("#F8FAFC")]),
-        ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#F1F5F9")),
-        ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
-        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D9E1EC")),
-        ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-    ]))
-    elements.append(table)
-    elements.append(Spacer(1, 14*mm))
-
-    sig_style = ParagraphStyle("sig", parent=styles["Normal"], fontSize=9, textColor=colors.HexColor("#475569"))
-    sig_tbl = Table([[
-        Paragraph("_" * 30 + "<br/>Field Staff Signature", sig_style), "",
-        Paragraph("_" * 30 + "<br/>Store Manager Signature", sig_style),
-    ]], colWidths=[70*mm, 42*mm, 70*mm])
-    elements.append(sig_tbl)
-
-    doc.build(elements)
-    buf.seek(0)
-    return buf.getvalue()
-
-
-def send_submission_email(email, store, rows, ts, pdf_bytes):
-    if not EMAIL_ENABLED:
-        return {"sent": False, "reason": "Email is not configured on the server."}
-    import smtplib
-    from email.mime.multipart import MIMEMultipart
-    from email.mime.text import MIMEText
-    from email.mime.base import MIMEBase
-    from email import encoders
-
-    # Submission confirmation always goes to the email entered by the field user.
-    # Optional office addresses remain CC recipients.
-    to_list = [email] if email else []
-    cc_list = [x.strip() for x in NOTIFY_EMAIL.split(",") if x.strip() and x.strip().lower() != email.lower()]
-    if not to_list:
-        return {"sent": False, "reason": "Submitter email is missing."}
-    total_qty = sum(float(r.get("Stock", 0) or 0) + float(r.get("Tester", 0) or 0) for r in rows)
-
-    msg = MIMEMultipart()
-    msg["From"] = f"{SMTP_FROM_NAME} <{SMTP_USER}>"
-    msg["To"] = ", ".join(to_list)
-    if cc_list:
-        msg["Cc"] = ", ".join(cc_list)
-    msg["Subject"] = f"Stock Verification - {store} - {ts.strftime('%d %b %Y')}"
-    body = (
-        f"Stock submission received.\n\n"
-        f"Shop: {store}\nSubmitted by: {email}\nDate & Time: {ts.strftime('%d %b %Y, %I:%M %p')}\n"
-        f"SKUs submitted: {len(rows)}\nTotal Qty (Stock + Tester): {total_qty:g}\n\n"
-        f"The detailed Stock Verification report is attached as a PDF."
-    )
-    msg.attach(MIMEText(body, "plain"))
-
-    part = MIMEBase("application", "pdf")
-    part.set_payload(pdf_bytes)
-    encoders.encode_base64(part)
-    safe_store = "".join(c if c.isalnum() else "_" for c in store)
-    part.add_header("Content-Disposition", f"attachment; filename=Stock_Verification_{safe_store}_{ts.strftime('%Y-%m-%d')}.pdf")
-    msg.attach(part)
-
-    try:
-        if EMAIL_SSL:
-            with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=20) as server:
-                server.login(SMTP_USER, SMTP_PASS)
-                server.sendmail(SMTP_USER, to_list + cc_list, msg.as_string())
-        else:
-            with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as server:
-                server.ehlo()
-                server.starttls()
-                server.ehlo()
-                server.login(SMTP_USER, SMTP_PASS)
-                server.sendmail(SMTP_USER, to_list + cc_list, msg.as_string())
-        return {"sent": True, "to": to_list, "cc": cc_list}
-    except Exception as e:
-        return {"sent": False, "reason": f"SMTP error: {type(e).__name__}: {e}"}
-
-
-def notify_submission(email, store, rows):
-    """Never allowed to break a successful submission response - failures are reported, not raised."""
-    if not EMAIL_ENABLED:
-        return {"sent": False, "reason": "not_configured"}
-    try:
-        ts = datetime.now(timezone.utc)
-        pdf_bytes = build_stock_verification_pdf(email, store, rows, ts)
-        return send_submission_email(email, store, rows, ts, pdf_bytes)
-    except Exception as e:
-        return {"sent": False, "reason": str(e)}
-
-
 @app.get("/")
 def index(): return render_template("index.html")
 
@@ -545,11 +373,9 @@ def submit():
             saved=int(result.get("saved_rows",len(cleaned)) or 0)
             if saved != len(cleaned):
                 return jsonify({"ok":False,"error":f"Submission mismatch: sent {len(cleaned)} rows but Apps Script saved {saved}.","remote":result}),502
-            email_status=notify_submission(email,store,cleaned)
-            return jsonify({"ok":True,"message":"Stock submitted successfully.","saved_rows":saved,"remote":result,"email":email_status})
+            return jsonify({"ok":True,"message":"Stock submitted successfully.","saved_rows":saved,"remote":result})
         saved=save_local_submission(payload)
-        email_status=notify_submission(email,store,cleaned)
-        return jsonify({"ok":True,"message":"Stock submitted successfully.","saved_rows":saved,"email":email_status})
+        return jsonify({"ok":True,"message":"Stock submitted successfully.","saved_rows":saved})
     except Exception as e: return jsonify({"ok":False,"error":str(e)}),500
 
 @app.get("/api/submissions")

@@ -141,3 +141,5 @@ table thead th.eka-sort-desc::after {
 .entry-brand .brand-name .brand-dot{color:#2563EB !important}
 .entry-brand .brand-sub{color:#64748B !important}
 .entry-brand .brand-mark{background:#2563EB !important}
+
+.column-item{cursor:grab;user-select:none}.column-item.dragging{opacity:.45}.column-drag{margin-right:8px;color:#64748B;cursor:grab}.entry-setup-actions{display:flex;justify-content:flex-end;margin-top:18px}.entry-setup-actions .btn{min-width:220px}

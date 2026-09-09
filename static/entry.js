@@ -4,6 +4,8 @@ let currentPage = 1;
 const PAGE_SIZE = 25;
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+let entryStep=1;
+function showSetup(){entryStep=1;$('skuArea').classList.add('hidden');$('setupActions').style.display='flex';$('email').disabled=false;$('store').disabled=stores.length<=1;$('continueEntry').disabled=!email||!selectedStore;}
 
 function showPopup(title, text, good = true, showDownload = false) {
   let el = $('entryPopup');
@@ -71,7 +73,7 @@ async function loadMeta() {
       selectedStore = stores[0];
       $('store').innerHTML = `<option value="${esc(stores[0])}">${esc(stores[0])}</option>`;
       $('store').disabled = true;
-      await loadSku();
+      $('continueEntry').disabled = false;
     } else {
       selectedStore = '';
       $('store').disabled = false;
@@ -80,7 +82,9 @@ async function loadMeta() {
       rows = [];
       currentPage = 1;
       updateSummary();
+      $('continueEntry').disabled = true;
     }
+    $('continueEntry').disabled = !selectedStore;
     msg(`Email verified. ${stores.length} shop(s) mapped.`, true);
   } catch (e) {
     msg(e.message);
@@ -101,6 +105,10 @@ async function loadSku() {
     const available = j.available_skus || [];
     rows = available.map(x => ({ ean: String(x['EAN Code'] ?? '').trim(), name: String(x['Product Name'] ?? ''), stock: 0, tester: 0 }));
     currentPage = 1;
+    entryStep=2;
+    $('setupActions').style.display='none';
+    $('email').disabled=true;
+    $('store').disabled=true;
     render();
     msg(`${rows.length.toLocaleString('en-IN')} SKU(s) loaded for ${selectedStore}.`, true);
   } catch (e) { msg(e.message); }
@@ -116,7 +124,7 @@ function render() {
 
   $('skuArea').innerHTML = `
     <div class="entry-toolbar">
-      <div><b>${esc(selectedStore)}</b><div class="muted entry-progress" id="progressText">${entered} of ${rows.length} SKU${rows.length === 1 ? '' : 's'} entered</div></div>
+      <div><button id="backToSetup" class="btn secondary small">← Back</button> <b>${esc(selectedStore)}</b><div class="muted entry-progress" id="progressText">${entered} of ${rows.length} SKU${rows.length === 1 ? '' : 's'} entered</div></div>
       <button id="addSku" class="link-btn">+ Add SKU From Master</button>
     </div>
     <div class="entry-submit-bar">
@@ -146,6 +154,7 @@ function render() {
     if (top) top.disabled = !rows.length;
   });
 
+  $('backToSetup').onclick = showSetup;
   $('addSku').onclick = openMasterPicker;
   $('closeMaster').onclick = closeMasterPicker;
   $('masterSearch').oninput = renderMasterResults;
@@ -206,12 +215,8 @@ async function submitAll() {
     const j = await getJson('/api/submit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     const saved = Number(j.saved_rows || 0);
     lastSubmission = { email, store: selectedStore, rows: enteredRows, savedRows: saved, timestamp: new Date() };
-    const emailSent = !!(j.email && j.email.sent);
-    const emailNote = emailSent
-      ? ' Email notification sent successfully.'
-      : ` Submission was saved, but email was not sent${j.email?.reason ? `: ${j.email.reason}` : '.'}`;
-    showPopup('Submission Successful', `${saved.toLocaleString('en-IN')} SKU rows were submitted successfully for ${selectedStore}.${emailNote}`, true, true);
-    msg(`${saved.toLocaleString('en-IN')} SKU rows submitted successfully.${emailSent ? ' Email sent.' : ' Email not sent — check the email settings on Render.'}`, emailSent);
+    showPopup('Submission Successful', `${saved.toLocaleString('en-IN')} SKU rows were submitted successfully for ${selectedStore}.`, true, true);
+    msg(`${saved.toLocaleString('en-IN')} SKU rows submitted successfully.`, true);
     rows.forEach(r => { r.stock = 0; r.tester = 0; });
     currentPage = 1;
     render();
@@ -308,6 +313,8 @@ function downloadSubmissionPdf() {
 
 $('email').addEventListener('blur', loadMeta);
 $('email').addEventListener('keydown', e => { if (e.key === 'Enter') loadMeta(); });
-$('store').onchange = loadSku;
+$('store').onchange = () => { selectedStore=$('store').value||''; $('continueEntry').disabled=!selectedStore; };
+$('continueEntry').onclick = loadSku;
 
 updateSummary();
+showSetup();
