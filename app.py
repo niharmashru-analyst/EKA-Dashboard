@@ -56,16 +56,15 @@ SMTP_PASS = (
     or os.getenv("GMAIL_APP_PASSWORD", "")
 ).strip()
 SMTP_FROM_NAME = os.getenv("SMTP_FROM_NAME", "RENEE E.K.A. FIELD STOCK ENTRY").strip()
-# Comma-separated office recipients. If omitted, send to the SMTP account itself.
+# The person who submits is always the primary recipient.
+# Optional NOTIFY_EMAIL / OFFICE_EMAIL values are treated as CC recipients.
 NOTIFY_EMAIL = (
     os.getenv("NOTIFY_EMAIL", "")
     or os.getenv("NOTIFY_TO", "")
     or os.getenv("OFFICE_EMAIL", "")
-    or SMTP_USER
 ).strip()
-CC_SUBMITTER = os.getenv("CC_SUBMITTER", "0").strip() == "1"
 EMAIL_SSL = os.getenv("SMTP_SSL", "0").strip() == "1"
-EMAIL_ENABLED = bool(SMTP_USER and SMTP_PASS and NOTIFY_EMAIL)
+EMAIL_ENABLED = bool(SMTP_USER and SMTP_PASS)
 
 STOCK_REQUIRED = ["Type","Store Name","EAN Code","Product Name","Pareto","Stock","Total MRP Value","L3M Avg Qty","L3M Avg Value","NOD"]
 STOCK_OPTIONAL_METRICS = ["LY Qty","LY Value","Current Month Qty","Current Month Value"]
@@ -417,14 +416,19 @@ def send_submission_email(email, store, rows, ts, pdf_bytes):
     from email.mime.base import MIMEBase
     from email import encoders
 
-    to_list = [x.strip() for x in NOTIFY_EMAIL.split(",") if x.strip()]
-    if CC_SUBMITTER and email and email not in to_list:
-        to_list.append(email)
+    # Submission confirmation always goes to the email entered by the field user.
+    # Optional office addresses remain CC recipients.
+    to_list = [email] if email else []
+    cc_list = [x.strip() for x in NOTIFY_EMAIL.split(",") if x.strip() and x.strip().lower() != email.lower()]
+    if not to_list:
+        return {"sent": False, "reason": "Submitter email is missing."}
     total_qty = sum(float(r.get("Stock", 0) or 0) + float(r.get("Tester", 0) or 0) for r in rows)
 
     msg = MIMEMultipart()
     msg["From"] = f"{SMTP_FROM_NAME} <{SMTP_USER}>"
     msg["To"] = ", ".join(to_list)
+    if cc_list:
+        msg["Cc"] = ", ".join(cc_list)
     msg["Subject"] = f"Stock Verification - {store} - {ts.strftime('%d %b %Y')}"
     body = (
         f"Stock submission received.\n\n"
@@ -445,15 +449,15 @@ def send_submission_email(email, store, rows, ts, pdf_bytes):
         if EMAIL_SSL:
             with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=20) as server:
                 server.login(SMTP_USER, SMTP_PASS)
-                server.sendmail(SMTP_USER, to_list, msg.as_string())
+                server.sendmail(SMTP_USER, to_list + cc_list, msg.as_string())
         else:
             with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as server:
                 server.ehlo()
                 server.starttls()
                 server.ehlo()
                 server.login(SMTP_USER, SMTP_PASS)
-                server.sendmail(SMTP_USER, to_list, msg.as_string())
-        return {"sent": True, "to": to_list}
+                server.sendmail(SMTP_USER, to_list + cc_list, msg.as_string())
+        return {"sent": True, "to": to_list, "cc": cc_list}
     except Exception as e:
         return {"sent": False, "reason": f"SMTP error: {type(e).__name__}: {e}"}
 
