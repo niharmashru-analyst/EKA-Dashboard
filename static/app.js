@@ -2,6 +2,7 @@ const COLS_VERSION='v3';
 let DATA=[],VAR=[],FILTERED=[],filters={},page='overview',charts=[];
 let paretoMode='value',varianceMetric='qty',varianceShop='',varianceSkuSearch='',varianceIssueOnly=false,DATA_COLUMNS=[],storePerfView='top';
 const FILTER_FIELDS=['Type','Store Name','Pareto','NOD Bucket','Stock Health'];
+const SKU_FILTER_KEY='__sku';
 const moneyL=n=>'₹'+(Number(n||0)/1e5).toFixed(2)+' L';
 const qty=n=>Math.round(Number(n||0)).toLocaleString('en-IN');
 const pct1=n=>Number(n||0).toFixed(1)+'%';
@@ -33,18 +34,84 @@ function kpi(t,v,s='',cls=''){return `<div class="kpi ${cls}"><div class="k-titl
 function chart(id,opt,clickFn){let e=document.getElementById(id);if(!e)return;try{let old=echarts.getInstanceByDom(e);if(old)old.dispose();let c=echarts.init(e);c.setOption(opt,true);c.resize();if(clickFn)c.on('click',clickFn);charts.push(c)}catch(err){e.innerHTML='<div class="empty">Chart could not render.</div>'}}
 const palette=['#2563EB','#0EA5E9','#0F766E','#7C3AED','#D97706','#475569','#14B8A6','#DC2626'];
 const base={color:palette,textStyle:{fontFamily:'Manrope',color:'#172033'},tooltip:{trigger:'axis',backgroundColor:'#fff',borderColor:'#D9E1EC',textStyle:{color:'#172033'}},grid:{left:55,right:45,top:70,bottom:65,containLabel:true},axisLabel:{color:'#64748B',fontSize:11},splitLine:{lineStyle:{color:'#E7EDF5'}}};
-function apply(){let q=(filters.__q||'').toLowerCase();FILTERED=DATA.filter(r=>FILTER_FIELDS.every(c=>!filters[c]||!filters[c].length||filters[c].includes(String(r[c])))).filter(r=>!q||String(r['Product Name']).toLowerCase().includes(q)||String(r['EAN Code']).toLowerCase().includes(q))}
-function triggerLabel(c){let s=filters[c]||[];return !s.length?'All '+c.toLowerCase():s.length<=2?s.join(', '):s.length+' selected'}
-function filterBar(){let h='<div class="filters"><div class="filter-head"><b>Filters</b><button id="clear" class="link">Clear all</button></div><div class="filter-grid">';FILTER_FIELDS.forEach(c=>{let opts=uniq(c),sel=new Set(filters[c]||[]);h+=`<div class="filter"><label>${esc(c)}</label><div class="multi" data-col="${esc(c)}"><button class="multi-trigger" type="button"><span>${esc(triggerLabel(c))}</span><span>⌄</span></button><div class="multi-menu"><input class="multi-search" placeholder="Search…"><div class="multi-options">${opts.map(v=>`<label class="multi-option"><input type="checkbox" value="${esc(v)}" ${sel.has(v)?'checked':''}><span>${esc(v)}</span></label>`).join('')}</div><div class="multi-foot"><button class="link-btn select-all" type="button">Select all</button><button class="link-btn clear-one" type="button">Clear</button></div></div></div></div>`});h+=`<div class="filter"><label>Search SKU / EAN</label><input id="search" placeholder="Product or EAN…" value="${esc(filters.__q||'')}"></div></div></div>`;return h}
-function renderFilters(){document.getElementById('filterBar').innerHTML=filterBar();document.querySelectorAll('.multi').forEach(m=>{let c=m.dataset.col;m.querySelector('.multi-trigger').onclick=e=>{e.stopPropagation();document.querySelectorAll('.multi.open').forEach(x=>x.classList.remove('open'));m.classList.add('open')};m.querySelector('.multi-menu').onclick=e=>e.stopPropagation();m.querySelector('.multi-search').oninput=e=>{let q=e.target.value.toLowerCase();m.querySelectorAll('.multi-option').forEach(x=>x.style.display=x.textContent.toLowerCase().includes(q)?'':'none')};m.querySelectorAll('.multi-option input').forEach(cb=>cb.onchange=()=>{let v=[...m.querySelectorAll('input:checked')].map(x=>x.value);v.length?filters[c]=v:delete filters[c];render()});m.querySelector('.select-all').onclick=()=>{filters[c]=uniq(c);render()};m.querySelector('.clear-one').onclick=()=>{delete filters[c];render()}});let q=document.getElementById('search');if(q)q.oninput=e=>{filters.__q=e.target.value;render()};document.getElementById('clear').onclick=()=>{filters={};render()}}
+function apply(){
+  let q=(filters.__q||'').toLowerCase();
+  const selectedSkus=new Set(filters[SKU_FILTER_KEY]||[]);
+  FILTERED=DATA
+    .filter(r=>FILTER_FIELDS.every(c=>!filters[c]||!filters[c].length||filters[c].includes(String(r[c]))))
+    .filter(r=>!selectedSkus.size||selectedSkus.has(String(r['EAN Code']??'').trim()))
+    .filter(r=>!q||String(r['Product Name']).toLowerCase().includes(q)||String(r['EAN Code']).toLowerCase().includes(q))
+}
+function triggerLabel(c){let s=filters[c]||[];if(c===SKU_FILTER_KEY)return !s.length?'All SKUs':s.length<=2?s.join(', '):s.length+' SKUs selected';return !s.length?'All '+c.toLowerCase():s.length<=2?s.join(', '):s.length+' selected'}
+function filterBar(){
+  let h='<div class="filters"><div class="filter-head"><b>Filters</b><button id="clear" class="link">Clear all</button></div><div class="filter-grid">';
+  FILTER_FIELDS.forEach(c=>{
+    let opts=uniq(c),sel=new Set(filters[c]||[]);
+    h+=`<div class="filter"><label>${esc(c)}</label><div class="multi" data-col="${esc(c)}"><button class="multi-trigger" type="button"><span>${esc(triggerLabel(c))}</span><span>⌄</span></button><div class="multi-menu"><input class="multi-search" placeholder="Search…"><div class="multi-options">${opts.map(v=>`<label class="multi-option"><input type="checkbox" value="${esc(v)}" ${sel.has(v)?'checked':''}><span>${esc(v)}</span></label>`).join('')}</div><div class="multi-foot"><button class="link-btn select-visible" type="button">Select visible</button><button class="link-btn clear-one" type="button">Clear</button></div></div></div></div>`
+  });
+  const skuOpts=[...new Map(DATA.map(r=>{
+    const e=String(r['EAN Code']??'').trim(),n=String(r['Product Name']??'').trim();
+    return [e,{ean:e,name:n}]
+  }).filter(([e])=>e).sort((a,b)=>a[0].localeCompare(b[0],undefined,{numeric:true})))];
+  const skuSel=new Set(filters[SKU_FILTER_KEY]||[]);
+  h+=`<div class="filter"><label>SKU / EAN — Multiple Select</label><div class="multi" data-col="${SKU_FILTER_KEY}"><button class="multi-trigger" type="button"><span>${esc(triggerLabel(SKU_FILTER_KEY))}</span><span>⌄</span></button><div class="multi-menu"><input class="multi-search" placeholder="Search SKU, EAN or product name…"><div class="multi-options">${skuOpts.map(([e,x])=>`<label class="multi-option" title="${esc(x.name)}"><input type="checkbox" value="${esc(e)}" ${skuSel.has(e)?'checked':''}><span><b>${esc(e)}</b>${x.name?` — ${esc(x.name)}`:''}</span></label>`).join('')}</div><div class="multi-foot"><button class="link-btn select-visible" type="button">Select visible</button><button class="link-btn clear-one" type="button">Clear</button></div></div></div></div>`;
+  h+=`</div></div>`;return h
+}
+function renderFilters(){
+  document.getElementById('filterBar').innerHTML=filterBar();
+  document.querySelectorAll('.multi').forEach(m=>{
+    let c=m.dataset.col;
+    m.querySelector('.multi-trigger').onclick=e=>{
+      e.stopPropagation();
+      document.querySelectorAll('.multi.open').forEach(x=>x.classList.remove('open'));
+      m.classList.add('open');
+    };
+    m.querySelector('.multi-menu').onclick=e=>e.stopPropagation();
+    const search=m.querySelector('.multi-search');
+    search.oninput=e=>{
+      let q=e.target.value.toLowerCase();
+      m.querySelectorAll('.multi-option').forEach(x=>{
+        x.style.display=x.textContent.toLowerCase().includes(q)?'':'none';
+      });
+    };
+    let lastIndex=-1;
+    const boxes=[...m.querySelectorAll('.multi-option input')];
+    boxes.forEach((cb,i)=>{
+      cb.onchange=e=>{
+        if(e.shiftKey && lastIndex>=0){
+          const from=Math.min(lastIndex,i),to=Math.max(lastIndex,i);
+          boxes.slice(from,to+1).forEach(b=>b.checked=cb.checked);
+        }
+        lastIndex=i;
+        const v=boxes.filter(b=>b.checked).map(b=>b.value);
+        v.length?filters[c]=v:delete filters[c];
+        render();
+      };
+    });
+    m.querySelector('.select-visible').onclick=()=>{
+      const visible=boxes.filter(b=>b.closest('.multi-option').style.display!=='none');
+      visible.forEach(b=>b.checked=true);
+      const v=boxes.filter(b=>b.checked).map(b=>b.value);
+      v.length?filters[c]=v:delete filters[c];
+      render();
+    };
+    m.querySelector('.clear-one').onclick=()=>{delete filters[c];render()};
+  });
+  document.getElementById('clear').onclick=()=>{filters={};render()};
+}
 document.addEventListener('click',()=>document.querySelectorAll('.multi.open').forEach(x=>x.classList.remove('open')));
 function getCols(id,baseCols){try{let x=JSON.parse(localStorage.getItem(COLS_VERSION+'_cols_'+id)||'null');if(Array.isArray(x))return x.filter(c=>baseCols.includes(c)).concat(baseCols.filter(c=>!x.includes(c)))}catch(_){}return baseCols}
 function columnChooser(id,cols){return `<div class="column-picker hidden" id="picker-${esc(id)}"><div class="column-picker-head"><b>Change column sequence</b><button class="picker-close" data-close-picker="${esc(id)}">✕</button></div><div id="picker-list-${esc(id)}">${cols.map((c,i)=>`<div class="column-item" data-col="${esc(c)}"><span>☷ ${esc(c)}</span><span><button data-up="${esc(c)}" ${i?'':'disabled'}>▲</button><button data-down="${esc(c)}" ${i<cols.length-1?'':'disabled'}>▼</button></span></div>`).join('')}</div><div class="column-picker-foot"><button class="btn small" data-save-cols="${esc(id)}">Apply</button><button class="btn secondary small" data-reset-cols="${esc(id)}">Reset</button></div></div>`}
-function table(rows,cols,id,limit=1000,rowClickCol=null){
+function table(rows,cols,id,limit=250,rowClickCol=null){
   cols=getCols(id,cols);
   const safeRows=rows||[];
-  const shown=safeRows.slice(0,limit);
-  return `<div class="table-tools"><div class="muted">${safeRows.length.toLocaleString('en-IN')} rows${safeRows.length>limit?' • display capped for performance':''}</div><button class="btn secondary small" data-open-picker="${esc(id)}">⚙ Columns</button>${columnChooser(id,cols)}</div><div class="table-wrap"><table data-sort-id="${esc(id)}"><thead><tr>${cols.map(c=>`<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${shown.map((r,ri)=>`<tr data-row-index="${ri}" ${rowClickCol?'data-click-value="'+esc(r[rowClickCol]??'')+'"':''}>${cols.map(c=>`<td class="${typeof r[c]==='number'?'num':''}">${cell(c,r[c])}</td>`).join('')}</tr>`).join('')}</tbody></table></div>${safeRows.length>limit?`<div class="table-foot">Showing first ${limit.toLocaleString('en-IN')} of ${safeRows.length.toLocaleString('en-IN')} rows. Use filters/search to narrow the dataset.</div>`:''}`
+  const pageSize=Math.min(Math.max(Number(limit)||250,50),500);
+  const stateKey='__tablePage_'+id;
+  const page=Math.max(0,Math.min(Number(window[stateKey]||0),Math.max(0,Math.ceil(safeRows.length/pageSize)-1)));
+  const start=page*pageSize;
+  const shown=safeRows.slice(start,start+pageSize);
+  const pages=Math.max(1,Math.ceil(safeRows.length/pageSize));
+  return `<div class="table-tools"><div class="muted">${safeRows.length.toLocaleString('en-IN')} rows${safeRows.length>pageSize?' • paginated for performance':''}</div><button class="btn secondary small" data-open-picker="${esc(id)}">⚙ Columns</button>${columnChooser(id,cols)}</div><div class="table-wrap"><table data-sort-id="${esc(id)}"><thead><tr>${cols.map(c=>`<th class="eka-sortable" title="Click to sort">${esc(c)}</th>`).join('')}</tr></thead><tbody>${shown.map((r,ri)=>`<tr data-row-index="${start+ri}" ${rowClickCol?'data-click-value="'+esc(r[rowClickCol]??'')+'"':''}>${cols.map(c=>`<td class="${typeof r[c]==='number'?'num':''}">${cell(c,r[c])}</td>`).join('')}</tr>`).join('')}</tbody></table></div><div class="table-foot table-pagination"><button class="btn secondary small" data-table-page="${esc(id)}" data-page-dir="-1" ${page<=0?'disabled':''}>‹ Prev</button><span>Page ${page+1} of ${pages}</span><button class="btn secondary small" data-table-page="${esc(id)}" data-page-dir="1" ${page>=pages-1?'disabled':''}>Next ›</button></div>`
 }
 document.addEventListener('click',e=>{let o=e.target.closest('[data-open-picker]');if(o){document.querySelectorAll('.column-picker').forEach(x=>x.classList.add('hidden'));document.getElementById('picker-'+o.dataset.openPicker)?.classList.remove('hidden')}let close=e.target.closest('[data-close-picker]');if(close)document.getElementById('picker-'+close.dataset.closePicker)?.classList.add('hidden');let up=e.target.closest('[data-up]'),down=e.target.closest('[data-down]');if(up||down){let p=(up||down).closest('.column-picker'),list=[...p.querySelectorAll('.column-item')],i=list.findIndex(x=>x.dataset.col===(up||down).dataset[up?'up':'down']);let j=up?i-1:i+1;if(i<0||j<0||j>=list.length)return;list[j].parentNode.insertBefore(list[i],up?list[j]:list[j].nextSibling);[...p.querySelectorAll('button[data-up],button[data-down]')].forEach(b=>{let items=[...p.querySelectorAll('.column-item')],ix=items.findIndex(x=>x.dataset.col===b.dataset.up||x.dataset.col===b.dataset.down);b.disabled=b.hasAttribute('data-up')?ix===0:ix===items.length-1})}let save=e.target.closest('[data-save-cols]');if(save){let p=document.getElementById('picker-'+save.dataset.saveCols),arr=[...p.querySelectorAll('.column-item')].map(x=>x.dataset.col);localStorage.setItem(COLS_VERSION+'_cols_'+save.dataset.saveCols,JSON.stringify(arr));p.classList.add('hidden');render()}let reset=e.target.closest('[data-reset-cols]');if(reset){localStorage.removeItem(COLS_VERSION+'_cols_'+reset.dataset.resetCols);render()}});
 function chartFormat(v,mode){return mode==='value'?moneyL(v):qty(v)}
@@ -160,7 +227,7 @@ function products(){
   const nc=nodCounts(rows);
   const hc=healthCounts(rows);
   const cols=tableCols(rows);
-  document.getElementById('app').innerHTML=`<div class="kpis kpis-4">${kpi('Total Unique SKUs',qty(rows.length),'One row per unique SKU')}${kpi('Stock Qty',qty(sum(rows,'Stock')),'Current stock')}${kpi('Stock Value',moneyL(sum(rows,'Total MRP Value')),'Current MRP')}${kpi('Valid NOD SKUs',qty(nc.total),'L3M-based NOD')}</div><div class="kpis kpis-5">${kpi('NOD <15',qty(nc.lt15),'SKU count','bad')}${kpi('NOD 15–30',qty(nc.n15_30),'SKU count')}${kpi('NOD 31–60',qty(nc.n31_60),'SKU count')}${kpi('NOD >60',qty(nc.gt60),'SKU count','bad')}${kpi('Dead Stock SKUs',qty(hc.dead),'Stock but no L3M movement','bad')}</div><div class="grid2"><div class="card clickable-card"><div class="card-title">Top 10 Pareto SKUs — Top 5 Preview <span class="muted">Click chart for all 10</span></div><div id="top10Chart" class="chart"></div></div><div class="card clickable-card"><div class="card-title">Top 25 Pareto SKUs — Top 5 Preview <span class="muted">Click chart for all 25</span></div><div id="top25Chart" class="chart"></div></div></div><div class="card"><div class="card-title">SKU Explorer <span class="muted">${rows.length.toLocaleString('en-IN')} unique SKUs • click a row to see every outlet for that SKU</span></div>${table(rows,cols,'products',Infinity,'Product Name')}</div>`;
+  document.getElementById('app').innerHTML=`<div class="kpis kpis-4">${kpi('Total Unique SKUs',qty(rows.length),'One row per unique SKU')}${kpi('Stock Qty',qty(sum(rows,'Stock')),'Current stock')}${kpi('Stock Value',moneyL(sum(rows,'Total MRP Value')),'Current MRP')}${kpi('Valid NOD SKUs',qty(nc.total),'L3M-based NOD')}</div><div class="kpis kpis-5">${kpi('NOD <15',qty(nc.lt15),'SKU count','bad')}${kpi('NOD 15–30',qty(nc.n15_30),'SKU count')}${kpi('NOD 31–60',qty(nc.n31_60),'SKU count')}${kpi('NOD >60',qty(nc.gt60),'SKU count','bad')}${kpi('Dead Stock SKUs',qty(hc.dead),'Stock but no L3M movement','bad')}</div><div class="grid2"><div class="card clickable-card"><div class="card-title">Top 10 Pareto SKUs — Top 5 Preview <span class="muted">Click chart for all 10</span></div><div id="top10Chart" class="chart"></div></div><div class="card clickable-card"><div class="card-title">Top 25 Pareto SKUs — Top 5 Preview <span class="muted">Click chart for all 25</span></div><div id="top25Chart" class="chart"></div></div></div><div class="card"><div class="card-title">SKU Explorer <span class="muted">${rows.length.toLocaleString('en-IN')} unique SKUs • click a row to see every outlet for that SKU</span></div>${table(rows,cols,'products',250,'Product Name')}</div>`;
   comboSkuOption('top10Chart',top10,'Top 10 Pareto SKUs');
   comboSkuOption('top25Chart',top25,'Top 25 Pareto SKUs');
   document.querySelectorAll('table[data-sort-id="products"] tbody tr').forEach(tr=>tr.onclick=()=>{
@@ -187,7 +254,7 @@ function stores(){
   rows.forEach(r=>{const rank=rankMap.get(r['Store Name']);r['Rank']=rank;r['Performance']=rank<=cutoff?'Top Performer':rank>rows.length-cutoff?'Underperforming':'Steady'});
   let cols=tableCols(rows);
   cols=['Rank',...cols.filter(c=>c!=='Rank')];
-  document.getElementById('app').innerHTML=`<div class="kpis kpis-4">${kpi('Total Stores',qty(rows.length),'One row per unique outlet')}${kpi('Stock Qty',qty(sum(rows,'Stock')),'Current stock')}${kpi('Stock Value',moneyL(sum(rows,'Total MRP Value')),'Current MRP')}${kpi('L3M Avg Qty',qty(sum(rows,'L3M Avg Qty')),'Run rate')}</div><div class="kpis kpis-4">${kpi('Current Month Qty',qty(sum(rows,'Current Month Qty')),'Current month')}${kpi('LY Qty',qty(sum(rows,'LY Qty')),'Last year')}${kpi('Valid NOD SKUs',qty(nc.total),'L3M-based NOD')}${kpi('CM vs L3M',pct1(sum(rows,'L3M Avg Qty')?sum(rows,'Current Month Qty')/sum(rows,'L3M Avg Qty')*100-100:0),'Sales movement')}</div><div class="kpis kpis-5">${kpi('NOD <15',qty(nc.lt15),'SKU count','bad')}${kpi('NOD 15–30',qty(nc.n15_30),'SKU count')}${kpi('NOD 31–60',qty(nc.n31_60),'SKU count')}${kpi('NOD >60',qty(nc.gt60),'SKU count','bad')}${kpi('Dead Stock Outlets',qty(hc.dead),'Stock but no L3M movement','bad')}</div><div class="grid2"><div class="card"><div class="card-title">Store Stock vs Sales Run Rate — Top 15</div><div id="storePerfChart" class="chart chart-tall"></div></div><div class="card"><div class="card-title">Store Sales Momentum — Top 12</div><div id="storeMomentumChart" class="chart chart-tall"></div></div></div><div class="grid2"><div class="card"><div class="card-title">Store NOD Distribution</div><div id="storeNodChart" class="chart"></div></div><div class="card"><div class="card-title">Type-wise Store Performance</div><div id="storeTypeChart" class="chart"></div></div></div><div class="card"><div class="card-title">Best &amp; Worst Performing Stores <span class="muted">By Movement % (Current Month vs L3M run-rate)</span> <span class="seg"><button id="spTop" class="${storePerfView==='top'?'active':''}">Top 10</button><button id="spWorst" class="${storePerfView==='worst'?'active':''}">Worst 10</button></span></div><div id="storePerfRankChart" class="chart chart-tall"></div></div><div class="card"><div class="card-title">Store Analysis <span class="muted">${rows.length.toLocaleString('en-IN')} unique outlets • click a row to see every SKU in that outlet</span></div>${table(rows,cols,'stores',Infinity,'Store Name')}</div>`;
+  document.getElementById('app').innerHTML=`<div class="kpis kpis-4">${kpi('Total Stores',qty(rows.length),'One row per unique outlet')}${kpi('Stock Qty',qty(sum(rows,'Stock')),'Current stock')}${kpi('Stock Value',moneyL(sum(rows,'Total MRP Value')),'Current MRP')}${kpi('L3M Avg Qty',qty(sum(rows,'L3M Avg Qty')),'Run rate')}</div><div class="kpis kpis-4">${kpi('Current Month Qty',qty(sum(rows,'Current Month Qty')),'Current month')}${kpi('LY Qty',qty(sum(rows,'LY Qty')),'Last year')}${kpi('Valid NOD SKUs',qty(nc.total),'L3M-based NOD')}${kpi('CM vs L3M',pct1(sum(rows,'L3M Avg Qty')?sum(rows,'Current Month Qty')/sum(rows,'L3M Avg Qty')*100-100:0),'Sales movement')}</div><div class="kpis kpis-5">${kpi('NOD <15',qty(nc.lt15),'SKU count','bad')}${kpi('NOD 15–30',qty(nc.n15_30),'SKU count')}${kpi('NOD 31–60',qty(nc.n31_60),'SKU count')}${kpi('NOD >60',qty(nc.gt60),'SKU count','bad')}${kpi('Dead Stock Outlets',qty(hc.dead),'Stock but no L3M movement','bad')}</div><div class="grid2"><div class="card"><div class="card-title">Store Stock vs Sales Run Rate — Top 15</div><div id="storePerfChart" class="chart chart-tall"></div></div><div class="card"><div class="card-title">Store Sales Momentum — Top 12</div><div id="storeMomentumChart" class="chart chart-tall"></div></div></div><div class="grid2"><div class="card"><div class="card-title">Store NOD Distribution</div><div id="storeNodChart" class="chart"></div></div><div class="card"><div class="card-title">Type-wise Store Performance</div><div id="storeTypeChart" class="chart"></div></div></div><div class="card"><div class="card-title">Best &amp; Worst Performing Stores <span class="muted">By Movement % (Current Month vs L3M run-rate)</span> <span class="seg"><button id="spTop" class="${storePerfView==='top'?'active':''}">Top Performing</button><button id="spWorst" class="${storePerfView==='worst'?'active':''}">Low Performing</button></span></div><div id="storePerfRankChart" class="chart chart-tall"></div></div><div class="card"><div class="card-title">Store Analysis <span class="muted">${rows.length.toLocaleString('en-IN')} unique outlets • click a row to see every SKU in that outlet</span></div>${table(rows,cols,'stores',Infinity,'Store Name')}</div>`;
   const topR=top.slice().reverse();
   chart('storePerfChart',{...base,legend:{show:true,top:5},dataZoom:[{type:'inside'},{type:'slider',bottom:8,height:16}],xAxis:{type:'value',axisLabel:{formatter:qty}},yAxis:{type:'category',data:topR.map(x=>x['Store Name']),axisLabel:{fontSize:9}},series:[{name:'Stock',type:'bar',data:topR.map(x=>+x.Stock||0),label:{show:true,position:'right',formatter:q=>qty(q.value)}},{name:'L3M Avg',type:'bar',data:topR.map(x=>+x['L3M Avg Qty']||0),label:{show:true,position:'right',formatter:q=>qty(q.value)}},{name:'CM',type:'bar',data:topR.map(x=>+x['Current Month Qty']||0),label:{show:true,position:'right',formatter:q=>qty(q.value)}}]});
   chart('storeMomentumChart',{...base,legend:{show:true,top:5},dataZoom:[{type:'inside'},{type:'slider',bottom:8,height:16}],xAxis:{type:'category',data:mom.map(x=>x['Store Name']),axisLabel:{rotate:28,fontSize:9,interval:0,formatter:v=>String(v).length>18?String(v).slice(0,18)+'…':v}},yAxis:{type:'value',axisLabel:{formatter:qty}},series:[{name:'LY',type:'line',data:mom.map(x=>+x['LY Qty']||0),symbol:'circle',symbolSize:7,label:{show:true,position:'top',formatter:q=>qty(q.value)}},{name:'L3M Avg',type:'line',data:mom.map(x=>+x['L3M Avg Qty']||0),symbol:'circle',symbolSize:7,label:{show:true,position:'top',formatter:q=>qty(q.value)}},{name:'CM',type:'line',data:mom.map(x=>+x['Current Month Qty']||0),symbol:'circle',symbolSize:7,label:{show:true,position:'top',formatter:q=>qty(q.value)}}]});
@@ -204,7 +271,7 @@ function stores(){
   document.querySelectorAll('table[data-sort-id="stores"] tbody tr').forEach(tr=>tr.onclick=()=>{const store=tr.dataset.clickValue;const detail=FILTERED.filter(r=>String(r['Store Name']??'').trim()===String(store).trim());if(detail.length)openDetailModal(store,'All SKUs in this outlet',detail,'store')});
 }
 
-function dataTable(){document.getElementById('app').innerHTML=`<div class="card"><div class="card-title">Complete Data Table</div>${table(FILTERED,tableCols(FILTERED),'datatable',100000)}</div>`}
+function dataTable(){document.getElementById('app').innerHTML=`<div class="card"><div class="card-title">Complete Data Table</div>${table(FILTERED,tableCols(FILTERED),'datatable',250)}</div>`}
 function openDetailModal(title,sub,rows,mode){let ov=document.getElementById('modalOverlay');document.getElementById('modalTitle').textContent=title;document.getElementById('modalSub').textContent=sub;document.getElementById('modalBody').innerHTML=`<div class="modal-filters"><input id="modalSearch" placeholder="Search SKU / EAN / Product / Shop…"><select id="modalFilter"><option value="">All ${mode==='sku'?'Shops':'SKUs'}</option></select></div><div id="modalTable"></div>`;let opts=mode==='sku'?[...new Set(rows.map(r=>r['Store Name']))]:[...new Set(rows.map(r=>r['Product Name']))];document.getElementById('modalFilter').innerHTML+=opts.sort().map(x=>`<option value="${esc(x)}">${esc(x)}</option>`).join('');let cols=tableCols(rows);function draw(){let q=(document.getElementById('modalSearch').value||'').toLowerCase(),f=document.getElementById('modalFilter').value;let rr=rows.filter(r=>!q||String(r['Product Name']).toLowerCase().includes(q)||String(r['EAN Code']).toLowerCase().includes(q)||String(r['Store Name']).toLowerCase().includes(q)).filter(r=>!f||(mode==='sku'?r['Store Name']===f:r['Product Name']===f));document.getElementById('modalTable').innerHTML=table(rr,cols,'modal-'+mode,2000)}document.getElementById('modalSearch').oninput=draw;document.getElementById('modalFilter').onchange=draw;draw();ov.classList.add('open')}
 async function fetchJson(url,opts){let r=await fetch(url,opts);let ct=r.headers.get('content-type')||'';if(!ct.includes('application/json')){throw Error(r.status===504||r.status===502||r.status===503?'The server took too long to refresh the data (gateway timeout). Please try again in a moment.':`Server returned an unexpected response (HTTP ${r.status}).`)}return r.json()}
 async function loadStock(force=false){let q=new URLSearchParams({_ts:Date.now()});if(force)q.set('refresh','1');let j=await fetchJson('/api/data?'+q,{cache:'no-store'});if(!j.ok)throw Error(j.error);DATA_COLUMNS=j.source_columns||j.columns||[];DATA=j.records.map(r=>({...r,Type:canonicalType(r.Type),Pareto:normalizePareto(r.Pareto),NOD:(Number(r['L3M Avg Qty']||0)>0?(Number(r.Stock||0)*31/Number(r['L3M Avg Qty']||1)):0)}));DATA=DATA.map(r=>({...r,'NOD Bucket':nodBucket(r.NOD),'Movement %':movementPct(r['Current Month Qty'],r['L3M Avg Qty']),'Growth %':growthPct(r['Current Month Qty'],r['LY Qty']),'LY Active':Number(r['LY Qty']||0)>0,'Stock Health':stockHealth(r.Stock,r['L3M Avg Qty'],r.NOD)}));document.getElementById('sourceBadge').textContent=`${j.source} • ${j.rows.toLocaleString('en-IN')} rows`;renderFilters();render()}
@@ -220,3 +287,43 @@ document.getElementById('sidebarBackdrop')?.addEventListener('click',closeSideba
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeSidebar()});
 document.getElementById('refresh').onclick=async()=>{let b=document.getElementById('refresh');b.disabled=true;b.textContent='↻ Refreshing…';try{if(page==='variance'){VAR=[];await ensureVarianceLoaded(true)}else await loadStock(true)}catch(e){document.getElementById('app').innerHTML=`<div class="error"><b>Refresh failed</b><br>${esc(e.message)}</div>`}finally{b.disabled=false;b.textContent='↻ Refresh'}};
 document.getElementById('modalClose').onclick=()=>document.getElementById('modalOverlay').classList.remove('open');document.getElementById('modalOverlay').onclick=e=>{if(e.target.id==='modalOverlay')e.currentTarget.classList.remove('open')};load();window.onresize=()=>charts.forEach(c=>c.resize());
+
+
+/* Generic fallback: make rendered table headers sortable by matching header text to row keys. */
+document.addEventListener("click", function(e) {
+  const th = e.target.closest("table thead th");
+  if (!th || e.target.closest("button, input, select, a")) return;
+  const table = th.closest("table");
+  if (!table || !table.tBodies.length) return;
+
+  const headers = [...table.querySelectorAll("thead th")];
+  const idx = headers.indexOf(th);
+  if (idx < 0) return;
+
+  const keyText = th.textContent.trim();
+  const rows = [...table.tBodies[0].rows];
+  const values = rows.map(tr => tr.cells[idx]?.textContent?.trim() ?? "");
+  const direction = th.dataset.ekaDir === "asc" ? "desc" : "asc";
+  th.dataset.ekaDir = direction;
+
+  rows.sort((ra, rb) => {
+    const a0 = (ra.cells[idx]?.textContent ?? "").trim().replace(/,/g, "");
+    const b0 = (rb.cells[idx]?.textContent ?? "").trim().replace(/,/g, "");
+    const an = Number(a0.replace(/[₹$%]/g, ""));
+    const bn = Number(b0.replace(/[₹$%]/g, ""));
+    let c;
+    if (Number.isFinite(an) && Number.isFinite(bn)) c = an - bn;
+    else c = a0.localeCompare(b0, undefined, {numeric:true, sensitivity:"base"});
+    return direction === "asc" ? c : -c;
+  });
+
+  const body = table.tBodies[0];
+  rows.forEach(r => body.appendChild(r));
+
+  headers.forEach(h => {
+    h.classList.remove("eka-sort-asc","eka-sort-desc");
+    h.removeAttribute("aria-sort");
+  });
+  th.classList.add(direction === "asc" ? "eka-sort-asc" : "eka-sort-desc");
+  th.setAttribute("aria-sort", direction === "asc" ? "ascending" : "descending");
+}, true);

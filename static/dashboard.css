@@ -107,3 +107,20 @@ main{background:var(--bg)}.eyebrow{color:#2563EB}.topbar h1{font-size:28px;lette
 }
 
 .table-wrap tbody tr[data-click-value]{cursor:pointer}.table-wrap tbody tr[data-click-value]:hover{background:#F8FAFC}.table-wrap{overflow:auto;max-height:70vh}.table-wrap table{min-width:max-content}.table-foot{padding:10px 12px;color:#64748B;font-size:11px}
+
+/* Sortable table headers */
+th.eka-sortable,
+table thead th {
+  cursor: pointer;
+  user-select: none;
+}
+th.eka-sort-asc::after,
+table thead th.eka-sort-asc::after {
+  content: " ↑";
+  opacity: .85;
+}
+th.eka-sort-desc::after,
+table thead th.eka-sort-desc::after {
+  content: " ↓";
+  opacity: .85;
+}
