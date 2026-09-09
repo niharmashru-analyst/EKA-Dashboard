@@ -37,7 +37,7 @@ DATABASE_PATH = os.getenv("DATABASE_PATH", os.path.join(app.root_path, "data", "
 
 STOCK_REQUIRED = ["Type","Store Name","EAN Code","Product Name","Pareto","Stock","Total MRP Value","L3M Avg Qty","L3M Avg Value","NOD"]
 STOCK_OPTIONAL_METRICS = ["LY Qty","LY Value","Current Month Qty","Current Month Value"]
-VAR_REQUIRED = ["Store Name","EAN Code","Product Name","Opening Stock Qty","Inward Qty","Tertiary Qty","Closing Stock Qty","Opening Stock Value","Inward Value","Tertiary Value","Closing Stock Value"]
+VAR_REQUIRED = ["Store Name","EAN Code","Product Name","Opening Stock Qty","Inward Qty","Tertiary Qty","Closing Stock Qty"]
 MAP_REQUIRED = ["Email ID","Store Name"]
 MASTER_REQUIRED = ["EAN Code","Product Name"]
 
@@ -120,16 +120,15 @@ def clean_stock(df):
 
 
 def clean_variance(df):
+    # Quantity-only variance model. Value columns are intentionally not loaded or calculated.
     df = df.copy(); df.columns = [str(c).strip() for c in df.columns]
     missing = [c for c in VAR_REQUIRED if c not in df.columns]
     if missing: raise RuntimeError("Variance_Data missing required columns: " + ", ".join(missing))
     for c in VAR_REQUIRED[3:]: df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
     for c in ["Store Name","EAN Code","Product Name"]: df[c] = df[c].fillna("").astype(str).str.strip()
     df["Calculated Closing Qty"] = df["Opening Stock Qty"] + df["Inward Qty"] - df["Tertiary Qty"]
-    df["Calculated Closing Value"] = df["Opening Stock Value"] + df["Inward Value"] - df["Tertiary Value"]
     df["Movement Check Qty"] = (df["Calculated Closing Qty"].round(4) == df["Closing Stock Qty"].round(4))
-    df["Movement Check Value"] = (df["Calculated Closing Value"].round(4) == df["Closing Stock Value"].round(4))
-    df["Movement Check"] = df["Movement Check Qty"] & df["Movement Check Value"]
+    df["Movement Check"] = df["Movement Check Qty"]
     return df
 
 
@@ -187,72 +186,57 @@ def load_submissions_live():
         return pd.DataFrame()
 
 def merge_variance_actuals(var, stock):
-    """Attach latest field-staff physical counts to the variance dataset.
-    System Stock Qty is always the current Stock_Data Stock when available.
-    Actual Value is derived from the current SKU's MRP/unit.
-    """
+    """Fast quantity-only variance merge. Uses vectorized pandas joins instead of row-by-row loops."""
     out = var.copy()
+    out["__key"] = out["Store Name"].astype(str).str.strip() + "|" + out["EAN Code"].astype(str).str.strip()
+
+    # Current system stock by Store + EAN.
+    st = stock[["Store Name","EAN Code","Product Name","Stock"]].copy()
+    st["__key"] = st["Store Name"].astype(str).str.strip() + "|" + st["EAN Code"].astype(str).str.strip()
+    st = st.drop_duplicates("__key", keep="last")[["__key","Product Name","Stock"]].rename(columns={"Product Name":"__Stock Product Name","Stock":"System Stock Qty"})
+    out = out.merge(st, on="__key", how="left")
+
+    # Latest field submission per Store + EAN.
     subs = load_submissions_live()
-    latest = {}
     if not subs.empty:
-        for _, s in subs.iterrows():
-            k = f"{str(s.get('store_name','')).strip()}|{str(s.get('ean_code','')).strip()}"
-            ts = str(s.get('submitted_at',''))
-            if k and (k not in latest or ts >= str(latest[k].get('submitted_at',''))):
-                latest[k] = s.to_dict()
-    stock_map = {}
-    for _, r in stock.iterrows():
-        k = f"{str(r.get('Store Name','')).strip()}|{str(r.get('EAN Code','')).strip()}"
-        stock_map[k] = r.to_dict()
-    actual_q=[]; actual_v=[]; system_q=[]; system_unit_mrp=[]; diff_q=[]; diff_v=[]; live=[]
-    for _, r in out.iterrows():
-        k=f"{str(r.get('Store Name','')).strip()}|{str(r.get('EAN Code','')).strip()}"
-        sr=stock_map.get(k, {})
-        s=latest.get(k)
-        sq=float(sr.get('Stock', r.get('Closing Stock Qty',0)) or 0)
-        cm=float(sr.get('Total MRP Value',0) or 0)
-        cs=float(sr.get('Stock',0) or 0)
-        unit_mrp=cm/cs if cs>0 else (float(r.get('Closing Stock Value',0) or 0)/float(r.get('Closing Stock Qty',0) or 1) if float(r.get('Closing Stock Qty',0) or 0)>0 else 0)
-        aq=float(s.get('total',0) or 0) if s else None
-        av=aq*unit_mrp if aq is not None else None
-        actual_q.append(aq); actual_v.append(av); system_q.append(sq); system_unit_mrp.append(unit_mrp)
-        diff_q.append((aq-sq) if aq is not None else 0)
-        diff_v.append((av-sq*unit_mrp) if aq is not None else 0)
-        live.append(bool(s))
-    out['System Stock Qty']=system_q
-    out['System Stock Unit MRP']=system_unit_mrp
-    out['Actual Closing Qty']=actual_q
-    out['Actual Closing Value']=actual_v
-    out['Difference Qty']=diff_q
-    out['Difference Value']=diff_v
-    out['Live Submission']=live
-    # Keep submissions for SKUs that exist in the current Stock_Data but are absent
-    # from the movement workbook; they must still be visible to the user.
-    existing={f"{str(r.get('Store Name','')).strip()}|{str(r.get('EAN Code','')).strip()}" for _,r in out.iterrows()}
-    extras=[]
-    for k,s in latest.items():
-        if k in existing: continue
-        sr=stock_map.get(k,{})
-        aq=float(s.get('total',0) or 0)
-        sq=float(sr.get('Stock',0) or 0)
-        cs=float(sr.get('Stock',0) or 0)
-        cm=float(sr.get('Total MRP Value',0) or 0)
-        unit_mrp=cm/cs if cs>0 else 0
-        extras.append({
-            'Store Name':s.get('store_name',''),'EAN Code':s.get('ean_code',''),
-            'Product Name':s.get('product_name') or sr.get('Product Name',''),
-            'Opening Stock Qty':0,'Inward Qty':0,'Tertiary Qty':0,'Closing Stock Qty':0,
-            'Opening Stock Value':0,'Inward Value':0,'Tertiary Value':0,'Closing Stock Value':0,
-            'Calculated Closing Qty':0,'Calculated Closing Value':0,'Movement Check':False,
-            'Movement Check Qty':False,'Movement Check Value':False,
-            'System Stock Qty':sq,'System Stock Unit MRP':unit_mrp,
-            'Actual Closing Qty':aq,'Actual Closing Value':aq*unit_mrp,
-            'Difference Qty':aq-sq,'Difference Value':(aq-sq)*unit_mrp,
-            'Live Submission':True
-        })
-    if extras:
-        out=pd.concat([out,pd.DataFrame(extras)],ignore_index=True,sort=False)
-    return out
+        for c in ["store_name","ean_code","product_name"]:
+            if c not in subs.columns: subs[c] = ""
+        if "total" not in subs.columns: subs["total"] = 0
+        if "submitted_at" not in subs.columns: subs["submitted_at"] = ""
+        subs["__key"] = subs["store_name"].fillna("").astype(str).str.strip() + "|" + subs["ean_code"].fillna("").astype(str).str.strip()
+        subs["total"] = pd.to_numeric(subs["total"], errors="coerce").fillna(0)
+        subs = subs.sort_values("submitted_at").drop_duplicates("__key", keep="last")
+        sub = subs[["__key","product_name","total"]].rename(columns={"product_name":"__Submitted Product Name","total":"Actual Closing Qty"})
+        out = out.merge(sub, on="__key", how="left")
+    else:
+        out["Actual Closing Qty"] = pd.NA
+
+    out["System Stock Qty"] = pd.to_numeric(out["System Stock Qty"], errors="coerce").fillna(out["Closing Stock Qty"]).fillna(0)
+    out["Actual Closing Qty"] = pd.to_numeric(out["Actual Closing Qty"], errors="coerce")
+    out["Difference Qty"] = out["Actual Closing Qty"].sub(out["System Stock Qty"]).where(out["Actual Closing Qty"].notna(), 0)
+    out["Live Submission"] = out["Actual Closing Qty"].notna()
+
+    # Keep submitted SKUs even if they are absent from the movement workbook.
+    if not subs.empty:
+        existing = set(out["__key"])
+        extra = subs[~subs["__key"].isin(existing)].copy()
+        if not extra.empty:
+            extra["Store Name"] = extra["__key"].str.rsplit("|", n=1).str[0]
+            extra["EAN Code"] = extra["__key"].str.rsplit("|", n=1).str[1]
+            extra["Product Name"] = extra["__Submitted Product Name"]
+            extra["Opening Stock Qty"] = 0; extra["Inward Qty"] = 0; extra["Tertiary Qty"] = 0; extra["Closing Stock Qty"] = 0
+            extra["Calculated Closing Qty"] = 0; extra["Movement Check Qty"] = False; extra["Movement Check"] = False
+            extra["System Stock Qty"] = 0
+            # If current Stock_Data has this SKU, use it.
+            extra = extra.merge(st[["__key","System Stock Qty"]], on="__key", how="left", suffixes=("","_stock"))
+            extra["System Stock Qty"] = pd.to_numeric(extra["System Stock Qty_stock"], errors="coerce").fillna(extra["System Stock Qty"]).fillna(0)
+            extra["Actual Closing Qty"] = pd.to_numeric(extra["Actual Closing Qty"], errors="coerce").fillna(0)
+            extra["Difference Qty"] = extra["Actual Closing Qty"] - extra["System Stock Qty"]
+            extra["Live Submission"] = True
+            extra = extra[out.columns]
+            out = pd.concat([out, extra], ignore_index=True, sort=False)
+
+    return out.drop(columns=[c for c in ["__key","__Stock Product Name","__Submitted Product Name"] if c in out.columns])
 
 
 def load_variance(force=False):
