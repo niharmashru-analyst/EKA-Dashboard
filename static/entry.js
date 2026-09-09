@@ -1,16 +1,17 @@
 let email = '', stores = [], selectedStore = '', master = [], rows = [];
+let lastSubmission = null;
 let currentPage = 1;
 const PAGE_SIZE = 25;
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 
-function showPopup(title, text, good = true) {
+function showPopup(title, text, good = true, showDownload = false) {
   let el = $('entryPopup');
   if (!el) {
     el = document.createElement('div');
     el.id = 'entryPopup';
     el.className = 'entry-popup-overlay';
-    el.innerHTML = `<div class="entry-popup"><div id="entryPopupIcon" class="entry-popup-icon"></div><h3 id="entryPopupTitle"></h3><p id="entryPopupText"></p><button id="entryPopupClose" class="btn">Done</button></div>`;
+    el.innerHTML = `<div class="entry-popup"><div id="entryPopupIcon" class="entry-popup-icon"></div><h3 id="entryPopupTitle"></h3><p id="entryPopupText"></p><div class="entry-popup-actions"><button id="entryPopupPdf" class="btn secondary">⬇ Download PDF</button><button id="entryPopupClose" class="btn">Done</button></div></div>`;
     document.body.appendChild(el);
     $('entryPopupClose').onclick = () => el.classList.remove('open');
     el.onclick = e => { if (e.target === el) el.classList.remove('open'); };
@@ -19,6 +20,11 @@ function showPopup(title, text, good = true) {
   $('entryPopupIcon').className = `entry-popup-icon ${good ? 'good' : 'bad'}`;
   $('entryPopupTitle').textContent = title;
   $('entryPopupText').textContent = text;
+  const pdfBtn = $('entryPopupPdf');
+  if (pdfBtn) {
+    pdfBtn.style.display = showDownload ? 'inline-flex' : 'none';
+    pdfBtn.onclick = downloadSubmissionPdf;
+  }
   el.classList.add('open');
 }
 
@@ -188,6 +194,9 @@ async function submitAll() {
   const button = $('submitEntryTop');
   if (button) { button.disabled = true; button.textContent = 'Submitting…'; }
   msg('Submitting all SKU entries…', true);
+  const enteredRows = rows
+    .filter(r => Number(r.stock || 0) !== 0 || Number(r.tester || 0) !== 0)
+    .map(r => ({ ean: r.ean, name: r.name, stock: Number(r.stock || 0), tester: Number(r.tester || 0), total: Number(r.stock || 0) + Number(r.tester || 0) }));
   try {
     const payload = {
       email,
@@ -196,18 +205,103 @@ async function submitAll() {
     };
     const j = await getJson('/api/submit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     const saved = Number(j.saved_rows || 0);
-    showPopup('Submission Successful', `${saved.toLocaleString('en-IN')} SKU rows were submitted successfully for ${selectedStore}.`, true);
+    lastSubmission = { email, store: selectedStore, rows: enteredRows, savedRows: saved, timestamp: new Date() };
+    const emailSent = j.email && j.email.sent;
+    const emailNote = emailSent ? ' A copy has also been emailed to the office automatically.' : '';
+    showPopup('Submission Successful', `${saved.toLocaleString('en-IN')} SKU rows were submitted successfully for ${selectedStore}.${emailNote}`, true, true);
     msg(`${saved.toLocaleString('en-IN')} SKU rows submitted successfully.`, true);
     rows.forEach(r => { r.stock = 0; r.tester = 0; });
     currentPage = 1;
     render();
   } catch (e) {
-    showPopup('Submission Failed', e.message || 'The submission could not be completed. No entries were cleared.', false);
+    showPopup('Submission Failed', e.message || 'The submission could not be completed. No entries were cleared.', false, false);
     msg(`Submission failed: ${e.message}`, false);
   } finally {
     const b = $('submitEntryTop');
     if (b) { b.disabled = !rows.length; b.textContent = 'Submit Stock'; }
   }
+}
+
+function downloadSubmissionPdf() {
+  if (!lastSubmission || !lastSubmission.rows.length) return;
+  if (!window.jspdf) { msg('PDF library failed to load. Check your internet connection and try again.', false); return; }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const marginX = 14;
+  let y = 18;
+
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(15); doc.setTextColor(23, 32, 51);
+  doc.text('SKU • 360', marginX, y);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(100, 116, 139);
+  doc.text('FIELD STOCK ENTRY', marginX, y + 5);
+
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(17); doc.setTextColor(23, 32, 51);
+  doc.text('Stock Verification Report', pageWidth - marginX, y, { align: 'right' });
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(100, 116, 139);
+  doc.text('Generated from field stock submission', pageWidth - marginX, y + 5, { align: 'right' });
+
+  y += 12;
+  doc.setDrawColor(217, 225, 236); doc.line(marginX, y, pageWidth - marginX, y);
+  y += 8;
+
+  const ts = lastSubmission.timestamp;
+  const dateStr = ts.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  const timeStr = ts.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+  const totalStock = lastSubmission.rows.reduce((a, r) => a + r.stock, 0);
+  const totalTester = lastSubmission.rows.reduce((a, r) => a + r.tester, 0);
+  const totalQty = totalStock + totalTester;
+
+  const details = [
+    ['Shop / Store', lastSubmission.store],
+    ['Submitted By', lastSubmission.email],
+    ['Date & Time', `${dateStr}, ${timeStr}`],
+    ['SKUs Submitted', String(lastSubmission.rows.length)]
+  ];
+  doc.setFontSize(9.5);
+  details.forEach((d, i) => {
+    const col = i % 2, row = Math.floor(i / 2);
+    const x = marginX + col * 92;
+    const yy = y + row * 7;
+    doc.setFont('helvetica', 'bold'); doc.setTextColor(71, 85, 105); doc.text(d[0] + ':', x, yy);
+    doc.setFont('helvetica', 'normal'); doc.setTextColor(23, 32, 51); doc.text(String(d[1]), x + 34, yy);
+  });
+  y += Math.ceil(details.length / 2) * 7 + 6;
+
+  doc.autoTable({
+    startY: y,
+    margin: { left: marginX, right: marginX, bottom: 26 },
+    head: [['#', 'EAN / SKU Code', 'Product Name', 'Stock Qty', 'Tester Qty', 'Total Qty']],
+    body: lastSubmission.rows.map((r, i) => [i + 1, r.ean, r.name, r.stock, r.tester, r.total]),
+    foot: [['', '', 'Total', totalStock, totalTester, totalQty]],
+    styles: { font: 'helvetica', fontSize: 9, cellPadding: 2.6, textColor: [30, 41, 59], lineColor: [217, 225, 236], lineWidth: 0.1 },
+    headStyles: { fillColor: [23, 32, 51], textColor: 255, fontStyle: 'bold', fontSize: 8.5 },
+    footStyles: { fillColor: [241, 245, 249], textColor: [15, 23, 42], fontStyle: 'bold' },
+    alternateRowStyles: { fillColor: [248, 250, 252] },
+    columnStyles: { 0: { cellWidth: 9, halign: 'center' }, 3: { halign: 'right', cellWidth: 22 }, 4: { halign: 'right', cellWidth: 22 }, 5: { halign: 'right', cellWidth: 24 } }
+  });
+
+  let finalY = doc.lastAutoTable.finalY + 16;
+  if (finalY > pageHeight - 40) { doc.addPage(); finalY = 24; }
+
+  doc.setDrawColor(148, 163, 184);
+  doc.line(marginX, finalY, marginX + 62, finalY);
+  doc.line(pageWidth - marginX - 62, finalY, pageWidth - marginX, finalY);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(71, 85, 105);
+  doc.text('Field Staff Signature', marginX, finalY + 5);
+  doc.text('Store Manager Signature', pageWidth - marginX - 62, finalY + 5);
+
+  const pageCount = doc.internal.getNumberOfPages();
+  for (let p = 1; p <= pageCount; p++) {
+    doc.setPage(p);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(148, 163, 184);
+    doc.text('Generated by SKU • 360 Field Entry', marginX, pageHeight - 10);
+    doc.text(`Page ${p} of ${pageCount}`, pageWidth - marginX, pageHeight - 10, { align: 'right' });
+  }
+
+  const safeStore = String(lastSubmission.store).replace(/[^a-z0-9]+/gi, '_');
+  doc.save(`Stock_Verification_${safeStore}_${ts.toISOString().slice(0, 10)}.pdf`);
 }
 
 $('email').addEventListener('blur', loadMeta);
