@@ -127,8 +127,10 @@ def clean_variance(df):
     for c in VAR_REQUIRED[3:]: df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
     for c in ["Store Name","EAN Code","Product Name"]: df[c] = df[c].fillna("").astype(str).str.strip()
     df["Calculated Closing Qty"] = df["Opening Stock Qty"] + df["Inward Qty"] - df["Tertiary Qty"]
-    df["Movement Check Qty"] = (df["Calculated Closing Qty"].round(4) == df["Closing Stock Qty"].round(4))
-    df["Movement Check"] = df["Movement Check Qty"]
+    # Stock Variance compares the movement-derived closing stock with the
+    # Closing Stock Qty supplied in Variance_Data. Positive = Closing Stock
+    # Qty is higher than the calculated closing; negative = lower.
+    df["Stock Variance Qty"] = df["Closing Stock Qty"] - df["Calculated Closing Qty"]
     return df
 
 
@@ -205,14 +207,22 @@ def merge_variance_actuals(var, stock):
     # Make sure the core movement columns always exist.
     for c in ["Store Name","EAN Code","Product Name","Opening Stock Qty",
               "Inward Qty","Tertiary Qty","Closing Stock Qty",
-              "Calculated Closing Qty","Movement Check Qty","Movement Check"]:
+              "Calculated Closing Qty","Stock Variance Qty"]:
         if c not in out.columns:
             out[c] = "" if c in ["Store Name","EAN Code","Product Name"] else 0
 
     out["__key"] = (out["Store Name"].fillna("").astype(str).str.strip() + "|" +
                     out["EAN Code"].fillna("").astype(str).str.strip())
 
-    # Current system stock: Store + EAN -> Stock Qty.
+    # System closing stock for Variance Analysis is the Closing Stock Qty from
+    # Variance_Data. It is the ERP/system closing quantity for the same movement
+    # period, so System Stock Qty and Closing Stock Qty intentionally match.
+    # Stock_Data is still used by the main dashboard, but is not substituted here
+    # because it may represent a later/current snapshot.
+    out["System Stock Qty"] = pd.to_numeric(out["Closing Stock Qty"], errors="coerce").fillna(0)
+
+    # Keep a keyed stock map only for submitted SKUs that do not exist in the
+    # movement workbook.
     st = stock.copy()
     for c in ["Store Name","EAN Code","Product Name","Stock"]:
         if c not in st.columns:
@@ -221,11 +231,6 @@ def merge_variance_actuals(var, stock):
                    st["EAN Code"].fillna("").astype(str).str.strip())
     st["Stock"] = pd.to_numeric(st["Stock"], errors="coerce").fillna(0)
     st_map = st.drop_duplicates("__key", keep="last").set_index("__key")["Stock"]
-    out["System Stock Qty"] = out["__key"].map(st_map)
-    out["System Stock Qty"] = pd.to_numeric(out["System Stock Qty"], errors="coerce")
-    out["System Stock Qty"] = out["System Stock Qty"].fillna(
-        pd.to_numeric(out["Closing Stock Qty"], errors="coerce")
-    ).fillna(0)
 
     # Latest field submission: Store + EAN -> submitted Total Qty.
     subs = load_submissions_live()
@@ -259,10 +264,8 @@ def merge_variance_actuals(var, stock):
             extra["EAN Code"] = extra["ean_code"].fillna("").astype(str).str.strip()
             extra["Product Name"] = extra["product_name"].fillna("").astype(str)
             for c in ["Opening Stock Qty","Inward Qty","Tertiary Qty","Closing Stock Qty",
-                      "Calculated Closing Qty"]:
+                      "Calculated Closing Qty","Stock Variance Qty"]:
                 extra[c] = 0
-            extra["Movement Check Qty"] = False
-            extra["Movement Check"] = False
             extra["System Stock Qty"] = extra["__key"].map(st_map).fillna(0)
             extra["Actual Closing Qty"] = pd.to_numeric(extra["total"], errors="coerce").fillna(0)
             extra["Difference Qty"] = extra["Actual Closing Qty"] - extra["System Stock Qty"]
@@ -283,7 +286,9 @@ def merge_variance_actuals(var, stock):
     if "Live Submission" not in out.columns:
         out["Live Submission"] = False
 
-    return out.drop(columns=[c for c in ["__key"] if c in out.columns])
+    # Do not expose legacy movement-check fields in the API/table/export.
+    out = out.drop(columns=[c for c in ["__key", "Movement Check Qty", "Movement Check"] if c in out.columns], errors="ignore")
+    return out
 
 def load_variance(force=False):
     now=time.time(); url=VARIANCE_EXCEL_URL or EXCEL_URL
@@ -502,6 +507,6 @@ def variance_export():
         if request.args.get("sku"):
             q=request.args.get("sku").lower(); df=df[df["EAN Code"].str.lower().str.contains(q,na=False) | df["Product Name"].str.lower().str.contains(q,na=False)]
         if request.args.get("issues")=="1":
-            df=df[(~df["Movement Check"]) | (df["Live Submission"] & (df["Difference Qty"].abs()>0))]
+            df=df[(df["Stock Variance Qty"].abs()>0) | (df["Live Submission"] & (df["Difference Qty"].abs()>0))]
         return Response(df.to_csv(index=False),mimetype="text/csv",headers={"Content-Disposition":"attachment; filename=variance_analysis.csv"})
     except Exception as e: return jsonify({"ok":False,"error":str(e)}),500
