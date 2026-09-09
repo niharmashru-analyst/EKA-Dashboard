@@ -186,77 +186,104 @@ def load_submissions_live():
         return pd.DataFrame()
 
 def merge_variance_actuals(var, stock):
-    """Fast quantity-only variance merge. Uses vectorized pandas joins instead of row-by-row loops.
+    """Build the quantity-only variance dataset without pandas column collisions.
 
-    The movement workbook is the source for movement fields; live submissions are
-    the source for physical/actual closing quantity. Remove any stale actual
-    submission fields from the movement frame first so pandas cannot create
-    _x/_y collisions that later cause KeyError: 'Actual Closing Qty'.
+    Uses keyed Series/maps rather than merging submission columns into the movement
+    dataframe. This guarantees that Actual Closing Qty always exists exactly once,
+    even when the source Variance_Data sheet already contains old submission fields.
     """
     out = var.copy()
-    # Defensive cleanup for older Variance_Data sheets that already contain
-    # submission-derived columns. These are rebuilt below from live submissions.
-    for c in ["Actual Closing Qty", "Difference Qty", "Live Submission"]:
-        if c in out.columns:
-            out = out.drop(columns=[c])
-    out["__key"] = out["Store Name"].astype(str).str.strip() + "|" + out["EAN Code"].astype(str).str.strip()
 
-    # Current system stock by Store + EAN.
-    st = stock[["Store Name","EAN Code","Product Name","Stock"]].copy()
-    st["__key"] = st["Store Name"].astype(str).str.strip() + "|" + st["EAN Code"].astype(str).str.strip()
-    st = st.drop_duplicates("__key", keep="last")[["__key","Product Name","Stock"]].rename(columns={"Product Name":"__Stock Product Name","Stock":"System Stock Qty"})
-    out = out.merge(st, on="__key", how="left")
+    # Remove any legacy/calculated submission fields first. They are rebuilt below.
+    drop_cols = [c for c in [
+        "Actual Closing Qty", "Difference Qty", "Live Submission",
+        "System Stock Qty", "__key", "__Stock Product Name", "__Submitted Product Name"
+    ] if c in out.columns]
+    if drop_cols:
+        out = out.drop(columns=drop_cols)
 
-    # Latest field submission per Store + EAN.
+    # Make sure the core movement columns always exist.
+    for c in ["Store Name","EAN Code","Product Name","Opening Stock Qty",
+              "Inward Qty","Tertiary Qty","Closing Stock Qty",
+              "Calculated Closing Qty","Movement Check Qty","Movement Check"]:
+        if c not in out.columns:
+            out[c] = "" if c in ["Store Name","EAN Code","Product Name"] else 0
+
+    out["__key"] = (out["Store Name"].fillna("").astype(str).str.strip() + "|" +
+                    out["EAN Code"].fillna("").astype(str).str.strip())
+
+    # Current system stock: Store + EAN -> Stock Qty.
+    st = stock.copy()
+    for c in ["Store Name","EAN Code","Product Name","Stock"]:
+        if c not in st.columns:
+            st[c] = "" if c != "Stock" else 0
+    st["__key"] = (st["Store Name"].fillna("").astype(str).str.strip() + "|" +
+                   st["EAN Code"].fillna("").astype(str).str.strip())
+    st["Stock"] = pd.to_numeric(st["Stock"], errors="coerce").fillna(0)
+    st_map = st.drop_duplicates("__key", keep="last").set_index("__key")["Stock"]
+    out["System Stock Qty"] = out["__key"].map(st_map)
+    out["System Stock Qty"] = pd.to_numeric(out["System Stock Qty"], errors="coerce")
+    out["System Stock Qty"] = out["System Stock Qty"].fillna(
+        pd.to_numeric(out["Closing Stock Qty"], errors="coerce")
+    ).fillna(0)
+
+    # Latest field submission: Store + EAN -> submitted Total Qty.
     subs = load_submissions_live()
-    if not subs.empty:
-        for c in ["store_name","ean_code","product_name"]:
-            if c not in subs.columns: subs[c] = ""
-        if "total" not in subs.columns: subs["total"] = 0
-        if "submitted_at" not in subs.columns: subs["submitted_at"] = ""
-        subs["__key"] = subs["store_name"].fillna("").astype(str).str.strip() + "|" + subs["ean_code"].fillna("").astype(str).str.strip()
-        subs["total"] = pd.to_numeric(subs["total"], errors="coerce").fillna(0)
-        subs = subs.sort_values("submitted_at").drop_duplicates("__key", keep="last")
-        # Only merge the submitted quantity here. Avoid carrying the temporary
-        # submitted product-name column through the variance frame; that column
-        # was causing the Variance Analysis response to fail when column names
-        # differed or collided. The movement workbook remains the source of the
-        # product name for existing SKUs.
-        sub = subs[["__key","total"]].rename(columns={"total":"Actual Closing Qty"})
-        out = out.merge(sub, on="__key", how="left")
-    else:
-        out["Actual Closing Qty"] = pd.NA
+    if subs is None or subs.empty:
+        subs = pd.DataFrame(columns=["store_name","ean_code","product_name","total","submitted_at"])
+    for c, default in [("store_name",""),("ean_code",""),("product_name",""),("total",0),("submitted_at","")]:
+        if c not in subs.columns:
+            subs[c] = default
+    subs = subs.copy()
+    subs["__key"] = (subs["store_name"].fillna("").astype(str).str.strip() + "|" +
+                      subs["ean_code"].fillna("").astype(str).str.strip())
+    subs["total"] = pd.to_numeric(subs["total"], errors="coerce").fillna(0)
+    subs = subs.sort_values("submitted_at", kind="stable").drop_duplicates("__key", keep="last")
+    sub_map = subs.set_index("__key")["total"] if not subs.empty else pd.Series(dtype=float)
 
-    out["System Stock Qty"] = pd.to_numeric(out["System Stock Qty"], errors="coerce").fillna(out["Closing Stock Qty"]).fillna(0)
+    # map() cannot create duplicate columns, so Actual Closing Qty is guaranteed.
+    out["Actual Closing Qty"] = out["__key"].map(sub_map)
     out["Actual Closing Qty"] = pd.to_numeric(out["Actual Closing Qty"], errors="coerce")
-    out["Difference Qty"] = out["Actual Closing Qty"].sub(out["System Stock Qty"]).where(out["Actual Closing Qty"].notna(), 0)
     out["Live Submission"] = out["Actual Closing Qty"].notna()
+    out["Difference Qty"] = (
+        out["Actual Closing Qty"].sub(out["System Stock Qty"])
+        .where(out["Actual Closing Qty"].notna(), 0)
+    )
 
-    # Keep submitted SKUs even if they are absent from the movement workbook.
+    # Add submitted SKUs that are not present in the movement workbook.
     if not subs.empty:
         existing = set(out["__key"])
         extra = subs[~subs["__key"].isin(existing)].copy()
         if not extra.empty:
-            extra["Store Name"] = extra["__key"].str.rsplit("|", n=1).str[0]
-            extra["EAN Code"] = extra["__key"].str.rsplit("|", n=1).str[1]
-            # Recover the submitted product name only for SKUs absent from the
-            # movement workbook.
-            name_map = subs.set_index("__key")["product_name"].to_dict() if "product_name" in subs.columns else {}
-            extra["Product Name"] = extra["__key"].map(name_map).fillna("")
-            extra["Opening Stock Qty"] = 0; extra["Inward Qty"] = 0; extra["Tertiary Qty"] = 0; extra["Closing Stock Qty"] = 0
-            extra["Calculated Closing Qty"] = 0; extra["Movement Check Qty"] = False; extra["Movement Check"] = False
-            extra["System Stock Qty"] = 0
-            # If current Stock_Data has this SKU, use it.
-            extra = extra.merge(st[["__key","System Stock Qty"]], on="__key", how="left", suffixes=("","_stock"))
-            extra["System Stock Qty"] = pd.to_numeric(extra["System Stock Qty_stock"], errors="coerce").fillna(extra["System Stock Qty"]).fillna(0)
-            extra["Actual Closing Qty"] = pd.to_numeric(extra["Actual Closing Qty"], errors="coerce").fillna(0)
+            extra["Store Name"] = extra["store_name"].fillna("").astype(str).str.strip()
+            extra["EAN Code"] = extra["ean_code"].fillna("").astype(str).str.strip()
+            extra["Product Name"] = extra["product_name"].fillna("").astype(str)
+            for c in ["Opening Stock Qty","Inward Qty","Tertiary Qty","Closing Stock Qty",
+                      "Calculated Closing Qty"]:
+                extra[c] = 0
+            extra["Movement Check Qty"] = False
+            extra["Movement Check"] = False
+            extra["System Stock Qty"] = extra["__key"].map(st_map).fillna(0)
+            extra["Actual Closing Qty"] = pd.to_numeric(extra["total"], errors="coerce").fillna(0)
             extra["Difference Qty"] = extra["Actual Closing Qty"] - extra["System Stock Qty"]
             extra["Live Submission"] = True
+            # Match the output schema exactly before concatenation.
+            for c in out.columns:
+                if c not in extra.columns:
+                    extra[c] = 0 if c not in ["Store Name","EAN Code","Product Name","__key"] else ""
             extra = extra[out.columns]
             out = pd.concat([out, extra], ignore_index=True, sort=False)
 
-    return out.drop(columns=[c for c in ["__key","__Stock Product Name","__Submitted Product Name"] if c in out.columns])
+    # Final defensive guarantee: no duplicate columns and the expected field exists.
+    out = out.loc[:, ~out.columns.duplicated()].copy()
+    if "Actual Closing Qty" not in out.columns:
+        out["Actual Closing Qty"] = pd.NA
+    if "Difference Qty" not in out.columns:
+        out["Difference Qty"] = 0
+    if "Live Submission" not in out.columns:
+        out["Live Submission"] = False
 
+    return out.drop(columns=[c for c in ["__key"] if c in out.columns])
 
 def load_variance(force=False):
     now=time.time(); url=VARIANCE_EXCEL_URL or EXCEL_URL
