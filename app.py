@@ -303,6 +303,8 @@ def load_variance(force=False):
 
 def json_records(df):
     out=df.copy()
+    # Defensive cleanup: duplicate Excel headers break pandas records JSON conversion.
+    out=out.loc[:, ~out.columns.duplicated()].copy()
     for c in out.columns:
         if pd.api.types.is_bool_dtype(out[c]): out[c]=out[c].astype(bool)
         elif pd.api.types.is_numeric_dtype(out[c]): out[c]=pd.to_numeric(out[c],errors="coerce").fillna(0)
@@ -406,8 +408,10 @@ def _ai_compact_context(stock, variance, view_mode, question):
     def clean_records(df, cols, n=25):
         if df.empty:return []
         d=df.loc[:, ~df.columns.duplicated()].copy()
-        cols=[c for c in cols if c in d.columns]
-        return json.loads(d[cols].head(n).to_json(orient="records"))
+        # The requested column list can also contain duplicates; JSON records requires unique labels.
+        cols=list(dict.fromkeys(c for c in cols if c in d.columns))
+        if not cols:return []
+        return json.loads(d.loc[:, cols].head(n).to_json(orient="records"))
 
     # Ranking tables are calculated server-side.
     top_stock=x.sort_values(mode_val,ascending=False)
