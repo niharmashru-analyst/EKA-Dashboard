@@ -143,3 +143,9 @@ table thead th.eka-sort-desc::after {
 /* Final table alignment: center all table content */
 table thead th, table tbody td { text-align: center !important; }
 .num { text-align: center !important; }
+.view-toggle{display:inline-flex;align-items:center;border:1px solid var(--line);background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.04)}
+.view-label{padding:0 8px;font-size:9px;font-weight:800;letter-spacing:.8px;color:var(--muted)}
+.view-btn{border:0;border-left:1px solid var(--line);background:#fff;color:var(--muted);padding:8px 12px;font-size:11px;font-weight:800;cursor:pointer}
+.view-btn.active{background:#EEF4FF;color:var(--accent)}
+.view-btn:hover{background:#F7FAFF}
+@media(max-width:700px){.actions{width:100%;justify-content:flex-end}.view-toggle{order:1}.actions #sourceBadge{order:2}.actions #refresh{order:3}}
