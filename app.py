@@ -3,6 +3,7 @@ from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from datetime import datetime, timezone
 import requests
 import pandas as pd
+import re
 from flask import Flask, jsonify, render_template, request, Response
 
 app = Flask(__name__)
@@ -34,6 +35,8 @@ CACHE_SECONDS = int(os.getenv("CACHE_SECONDS", "900"))
 SUBMISSION_API_URL = os.getenv("SUBMISSION_API_URL", "").strip()
 SUBMISSION_API_SECRET = os.getenv("SUBMISSION_API_SECRET", "").strip()
 DATABASE_PATH = os.getenv("DATABASE_PATH", os.path.join(app.root_path, "data", "submissions.db"))
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
 
 STOCK_REQUIRED = ["Type","Store Name","EAN Code","Product Name","Pareto","Stock","Total MRP Value","L3M Avg Qty","L3M Avg Value","NOD"]
 STOCK_OPTIONAL_METRICS = ["LY Qty","LY Value","Current Month Qty","Current Month Value"]
@@ -336,6 +339,155 @@ def remote_request(method, payload=None):
     else: r=requests.request(method,SUBMISSION_API_URL,json=payload,timeout=30)
     r.raise_for_status(); return r.json()
 
+
+
+def _ai_num(v):
+    try:
+        x=float(v)
+        return 0 if pd.isna(x) else x
+    except Exception:
+        return 0
+
+def _ai_prepare_stock(df, view_mode="qty"):
+    if df is None or df.empty:
+        return pd.DataFrame()
+    x=df.copy()
+    for c in ["Stock","L3M Avg Qty","LY Qty","Current Month Qty","Total MRP Value","L3M Avg Value","LY Value","Current Month Value"]:
+        if c in x.columns: x[c]=pd.to_numeric(x[c],errors="coerce").fillna(0)
+    if "Growth %" not in x.columns:
+        x["Growth %"]=x.apply(lambda r: ((r.get("Current Month Qty",0)-r.get("LY Qty",0))/r.get("LY Qty",1)*100) if r.get("LY Qty",0)>0 else None,axis=1)
+    x["NOD"]=x.apply(lambda r: (r.get("Stock",0)*31/r.get("L3M Avg Qty",1)) if r.get("L3M Avg Qty",0)>0 else 0,axis=1)
+    return x
+
+def _ai_filter_stock(df, payload):
+    x=df.copy()
+    filters=payload.get("filters") or {}
+    for c in ["Type","Store Name","Pareto","NOD Bucket","Stock Health"]:
+        vals=filters.get(c) or []
+        if vals and c in x.columns: x=x[x[c].astype(str).isin([str(v) for v in vals])]
+    skus=filters.get("__sku") or []
+    if skus and "EAN Code" in x.columns: x=x[x["EAN Code"].astype(str).str.strip().isin([str(v).strip() for v in skus])]
+    q=str(filters.get("__q") or "").strip().lower()
+    if q:
+        mask=x["EAN Code"].astype(str).str.lower().str.contains(q,na=False) if "EAN Code" in x.columns else False
+        if "Product Name" in x.columns: mask=mask|x["Product Name"].astype(str).str.lower().str.contains(q,na=False)
+        x=x[mask]
+    return x
+
+def _ai_compact_context(stock, variance, view_mode, question):
+    x=_ai_prepare_stock(stock,view_mode)
+    # Overview totals / counts: calculated in Python, never by the model.
+    mode_val="Total MRP Value" if view_mode=="value" else "Stock"
+    cm_val="Current Month Value" if view_mode=="value" else "Current Month Qty"
+    ly_val="LY Value" if view_mode=="value" else "LY Qty"
+    l3m_val="L3M Avg Value" if view_mode=="value" else "L3M Avg Qty"
+    total={
+        "sku_count": int(x["EAN Code"].nunique()) if "EAN Code" in x else 0,
+        "store_count": int(x["Store Name"].nunique()) if "Store Name" in x else 0,
+        "stock": float(x[mode_val].sum()),
+        "l3m_avg": float(x[l3m_val].sum()),
+        "current_month": float(x[cm_val].sum()),
+        "ly": float(x[ly_val].sum()),
+        "nod_lt_15": int((x["NOD"]<15).sum()),
+        "nod_15_30": int(((x["NOD"]>=15)&(x["NOD"]<=30)).sum()),
+        "nod_31_60": int(((x["NOD"]>30)&(x["NOD"]<=60)).sum()),
+        "nod_gt_60": int((x["NOD"]>60).sum()),
+        "dead_stock": int((x.get("Stock Health",pd.Series(dtype=str))=="Dead Stock").sum()) if "Stock Health" in x else 0,
+    }
+    # Exact aggregate growth based on CM vs LY, matching dashboard logic.
+    if total["ly"]>0: total["growth_pct"]=(total["current_month"]-total["ly"])/total["ly"]*100
+    else: total["growth_pct"]=None
+
+    def clean_records(df, cols, n=25):
+        if df.empty:return []
+        cols=[c for c in cols if c in df.columns]
+        return json.loads(df[cols].head(n).to_json(orient="records"))
+
+    # Ranking tables are calculated server-side.
+    top_stock=x.sort_values(mode_val,ascending=False)
+    worst_growth=x[x["Growth %"].notna()].sort_values("Growth %",ascending=True)
+    best_growth=x[x["Growth %"].notna()].sort_values("Growth %",ascending=False)
+    high_nod=x.sort_values("NOD",ascending=False)
+    by_store=x.groupby("Store Name",dropna=False).agg({mode_val:"sum",cm_val:"sum",ly_val:"sum", "Stock":"sum","L3M Avg Qty":"sum"}).reset_index()
+    by_store["Growth %"]=by_store.apply(lambda r: ((r[cm_val]-r[ly_val])/r[ly_val]*100) if r[ly_val]>0 else None,axis=1)
+    by_store["NOD"]=by_store.apply(lambda r: r["Stock"]*31/r["L3M Avg Qty"] if r["L3M Avg Qty"]>0 else 0,axis=1)
+    by_store_stock=by_store.sort_values(mode_val,ascending=False)
+    by_store_growth=by_store[by_store["Growth %"].notna()].sort_values("Growth %")
+
+    # If the question contains a specific SKU/store/product term, include matching rows.
+    q=question.lower()
+    tokens=[t for t in re.findall(r"[a-z0-9][a-z0-9._-]{2,}",q) if t not in {"what","which","show","tell","about","store","stores","sku","stock","growth","value","qty","quantity","the","and","for","with","from","this","that","have","does","give","should","where","highest","lowest","top","bottom"}]
+    match=pd.DataFrame()
+    if tokens:
+        mask=pd.Series(False,index=x.index)
+        for c in ["EAN Code","Product Name","Store Name","Pareto"]:
+            if c in x.columns:
+                col=x[c].astype(str).str.lower()
+                for t in tokens: mask=mask|col.str.contains(re.escape(t),na=False)
+        match=x[mask]
+
+    context={
+      "view_mode":view_mode,
+      "rules":{"growth":"(Current Month - LY) / LY * 100; LY=0 is Not Active LY","nod":"Stock Qty * 31 / L3M Avg Qty","value_mode":"Value columns are used when view_mode=value"},
+      "overview":total,
+      "top_stock":clean_records(top_stock,["Store Name","EAN Code","Product Name","Pareto",mode_val,"Stock","NOD","Growth %"]),
+      "worst_growth":clean_records(worst_growth,["Store Name","EAN Code","Product Name","Pareto",cm_val,ly_val,mode_val,"NOD","Growth %"]),
+      "best_growth":clean_records(best_growth,["Store Name","EAN Code","Product Name","Pareto",cm_val,ly_val,mode_val,"NOD","Growth %"]),
+      "highest_nod":clean_records(high_nod,["Store Name","EAN Code","Product Name","Pareto",mode_val,"L3M Avg Qty","NOD","Growth %"]),
+      "store_stock_ranking":clean_records(by_store_stock,["Store Name",mode_val,cm_val,ly_val,"NOD","Growth %"]),
+      "store_growth_ranking":clean_records(by_store_growth,["Store Name",mode_val,cm_val,ly_val,"NOD","Growth %"]),
+      "matched_rows":clean_records(match,["Store Name","EAN Code","Product Name","Pareto",mode_val,"Stock","L3M Avg Qty","NOD","Growth %"],50)
+    }
+    if variance is not None and not variance.empty:
+        v=variance.copy()
+        for c in ["Opening Stock Qty","Inward Qty","Tertiary Qty","Closing Stock Qty","Calculated Closing Qty","Stock Variance Qty","Actual Closing Qty","Difference Qty"]:
+            if c in v.columns:v[c]=pd.to_numeric(v[c],errors="coerce").fillna(0)
+        context["variance"]={
+          "rows":len(v),"sku_count":int(v["EAN Code"].nunique()) if "EAN Code" in v else 0,"store_count":int(v["Store Name"].nunique()) if "Store Name" in v else 0,
+          "stock_variance_signed":float(v.get("Stock Variance Qty",pd.Series(dtype=float)).sum()),
+          "physical_variance_signed":float(v.get("Difference Qty",pd.Series(dtype=float)).sum()),
+          "top_stock_variance":clean_records(v.reindex(v["Stock Variance Qty"].abs().sort_values(ascending=False).index),["Store Name","EAN Code","Product Name","Opening Stock Qty","Inward Qty","Tertiary Qty","Calculated Closing Qty","Closing Stock Qty","Stock Variance Qty","Actual Closing Qty","Difference Qty"],25)
+        }
+    return context
+
+@app.post("/api/ai/chat")
+def ai_chat():
+    try:
+        if not GEMINI_API_KEY:
+            return jsonify({"ok":False,"error":"Gemini AI is not configured. Add GEMINI_API_KEY in Render Environment Variables."}),503
+        payload=request.get_json(silent=True) or {}
+        question=str(payload.get("question") or "").strip()
+        if not question:return jsonify({"ok":False,"error":"Please enter a question."}),400
+        if len(question)>1000:return jsonify({"ok":False,"error":"Question is too long (maximum 1000 characters)."}),400
+        stock=load_stock(False)
+        filtered=_ai_filter_stock(stock,payload)
+        try: variance=load_variance(False)
+        except Exception: variance=pd.DataFrame()
+        context=_ai_compact_context(filtered,variance,str(payload.get("view_mode") or "qty"),question)
+        system=("You are E.K.A. AI Analyst inside a business analytics dashboard. "
+          "Answer ONLY using the supplied dashboard data/context. Never invent or estimate a number. "
+          "All numeric calculations must be based on the Python-calculated context. "
+          "Growth means Current Month vs LY, not L3M. NOD is days and is Stock Qty*31/L3M Avg Qty. "
+          "Respect view_mode: qty means quantities, value means monetary value. NOD stays in days. "
+          "You may provide business insights and practical strategy recommendations, but clearly label them as recommendations. "
+          "If the supplied context does not contain enough information, say so. Do not answer unrelated questions. "
+          "Keep answers concise but useful. Prefer bullets and cite exact SKU/store names and metrics from context.")
+        user=("Question: "+question+"\n\nDashboard context (authoritative):\n"+json.dumps(context,ensure_ascii=False,separators=(",",":")))
+        url=f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+        body={"system_instruction":{"parts":[{"text":system}]},"contents":[{"role":"user","parts":[{"text":user}]}],"generationConfig":{"temperature":0.2,"maxOutputTokens":900}}
+        r=requests.post(url,json=body,timeout=45)
+        if r.status_code>=400:
+            try: detail=r.json().get("error",{}).get("message",r.text)
+            except Exception: detail=r.text
+            return jsonify({"ok":False,"error":"Gemini API error: "+str(detail)}),502
+        data=r.json(); text=""
+        for cand in data.get("candidates",[]):
+            for part in cand.get("content",{}).get("parts",[]):
+                if part.get("text"): text+=part["text"]
+        if not text:text="I couldn't generate an answer from the available dashboard data."
+        return jsonify({"ok":True,"answer":text,"view_mode":payload.get("view_mode") or "qty"})
+    except Exception as e:
+        return jsonify({"ok":False,"error":str(e)}),500
 
 @app.get("/")
 def index(): return render_template("index.html")
