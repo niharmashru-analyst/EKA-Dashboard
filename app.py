@@ -512,7 +512,7 @@ def _ai_analyze_query(x, variance, view_mode, question):
         if matches:
             result["analysis_type"]="store_comparison"; result["results"]=[{k:(float(r[k]) if isinstance(r[k],(int,float)) else r[k]) for k in r.index if k in ["Store Name",mode_stock,"Stock",mode_cm,mode_ly,"Growth %","NOD","SKU Count"]} for r in matches]; return result
     # General context: authoritative totals plus compact rankings.
-    total={"sku_count":result["scope"]["skus"],"store_count":result["scope"]["stores"],"stock":float(x[mode_stock].sum()) if mode_stock in x else 0,"current_month":float(x[mode_cm].sum()) if mode_cm in x else 0,"ly":float(x[mode_ly].sum()) if mode_ly in x else 0,"l3m_avg":float(x[mode_l3m].sum()) if mode_l3m in x else 0}
+    total={"sku_count":result["scope"]["skus"],"store_count":result["scope"]["stores"],"stock":float(x[mode_stock].sum()) if mode_stock in x else 0,"current_month":float(x[mode_cm].sum()) if mode_cm in x else 0,"ly":float(x[mode_ly].sum()) if mode_ly in x else 0,"l3m_avg":float(x[mode_l3].sum()) if mode_l3 in x else 0}
     total["growth_pct"]=(total["current_month"]-total["ly"])/total["ly"]*100 if total["ly"] else None
     result["analysis_type"]="general"; result["overview"]=total
     result["top_skus"]=_ai_records(sku.sort_values(mode_stock,ascending=False),cols(sku),10)
@@ -550,10 +550,10 @@ def ai_chat():
           "For rankings, preserve the requested order and do not reorder unless the user asks. "
           "For a specific SKU/store, discuss only evidence present in the result. "
           "If the result is empty or insufficient, say exactly what data is missing. Do not answer unrelated questions. "
-          "Keep answers concise, structured, and business-friendly.")
+          "Keep answers concise, structured, and business-friendly. If the user explicitly asks for Top 10 or 10 items and the server result contains 10 items, include all 10 items; do not stop early.")
         user=("Question: "+question+"\n\nDashboard context (authoritative):\n"+json.dumps(context,ensure_ascii=False,separators=(",",":")))
         url=f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
-        body={"system_instruction":{"parts":[{"text":system}]},"contents":[{"role":"user","parts":[{"text":user}]}],"generationConfig":{"temperature":0.2,"maxOutputTokens":900}}
+        body={"system_instruction":{"parts":[{"text":system}]},"contents":[{"role":"user","parts":[{"text":user}]}],"generationConfig":{"temperature":0.2,"maxOutputTokens":2200}}
         r=requests.post(url,json=body,timeout=45)
         if r.status_code>=400:
             try: detail=r.json().get("error",{}).get("message",r.text)
