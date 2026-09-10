@@ -352,6 +352,11 @@ def _ai_prepare_stock(df, view_mode="qty"):
     if df is None or df.empty:
         return pd.DataFrame()
     x=df.copy()
+    # Excel/source files can occasionally contain duplicate header names.
+    # Pandas returns a DataFrame (instead of a Series) for duplicate columns,
+    # which breaks to_json(orient="records") and several aggregations below.
+    # Keep the first occurrence consistently for the AI context.
+    x=x.loc[:, ~x.columns.duplicated()].copy()
     for c in ["Stock","L3M Avg Qty","LY Qty","Current Month Qty","Total MRP Value","L3M Avg Value","LY Value","Current Month Value"]:
         if c in x.columns: x[c]=pd.to_numeric(x[c],errors="coerce").fillna(0)
     if "Growth %" not in x.columns:
@@ -400,8 +405,9 @@ def _ai_compact_context(stock, variance, view_mode, question):
 
     def clean_records(df, cols, n=25):
         if df.empty:return []
-        cols=[c for c in cols if c in df.columns]
-        return json.loads(df[cols].head(n).to_json(orient="records"))
+        d=df.loc[:, ~df.columns.duplicated()].copy()
+        cols=[c for c in cols if c in d.columns]
+        return json.loads(d[cols].head(n).to_json(orient="records"))
 
     # Ranking tables are calculated server-side.
     top_stock=x.sort_values(mode_val,ascending=False)
@@ -464,7 +470,7 @@ def ai_chat():
         try: variance=load_variance(False)
         except Exception: variance=pd.DataFrame()
         context=_ai_compact_context(filtered,variance,str(payload.get("view_mode") or "qty"),question)
-        system=("You are E.K.A. AI Analyst inside a business analytics dashboard. "
+        system=("You are AI Analyst inside a business analytics dashboard. "
           "Answer ONLY using the supplied dashboard data/context. Never invent or estimate a number. "
           "All numeric calculations must be based on the Python-calculated context. "
           "Growth means Current Month vs LY, not L3M. NOD is days and is Stock Qty*31/L3M Avg Qty. "

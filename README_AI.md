@@ -1,4 +1,4 @@
-# E.K.A. AI Analyst — Setup
+# AI Analyst — Setup
 
 This build adds an AI Analyst panel backed by Google Gemini. The dashboard data is calculated in Flask first; the model receives a compact, authoritative context rather than the raw workbook.
 
@@ -11,7 +11,7 @@ Windows CMD:
 set GEMINI_API_KEY=YOUR_KEY_HERE
 python app.py
 ```
-Then open the dashboard and click **E.K.A. AI Analyst**.
+Then open the dashboard and click **AI Analyst**.
 
 ## 3. Render
 In Render → your Web Service → Environment add:
