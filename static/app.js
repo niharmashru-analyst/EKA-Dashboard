@@ -1,4 +1,4 @@
-const COLS_VERSION='v6';
+const COLS_VERSION='v7';
 let DATA=[],VAR=[],FILTERED=[],filters={},page='overview',charts=[];
 let paretoMode='qty',viewMode=localStorage.getItem('ekaViewMode')||'qty',varianceMetric='qty',varianceShop='',varianceSkuSearch='',varianceIssueOnly=false,DATA_COLUMNS=[],storePerfView='top',skuPerfView='top';
 const FILTER_FIELDS=['Type','Store Name','Pareto','NOD Bucket','Stock Health'];
@@ -111,9 +111,9 @@ function renderFilters(){
       v.length?filters[c]=v:delete filters[c];
       render();
     };
-    m.querySelector('.clear-one').onclick=()=>{delete filters[c];render()};
+    m.querySelector('.clear-one').onclick=e=>{e.preventDefault();e.stopPropagation();m.querySelectorAll('.multi-option input').forEach(b=>b.checked=false);delete filters[c];render()};
   });
-  document.getElementById('clear').onclick=()=>{filters={};render()};
+  document.getElementById('clear').onclick=e=>{e.preventDefault();e.stopPropagation();filters={};document.querySelectorAll('.multi-option input[type=checkbox]').forEach(b=>b.checked=false);render()};
 }
 document.addEventListener('click',()=>document.querySelectorAll('.multi.open').forEach(x=>x.classList.remove('open')));
 function getCols(id,baseCols){try{let x=JSON.parse(localStorage.getItem(COLS_VERSION+'_cols_'+id)||'null');if(Array.isArray(x))return x.filter(c=>baseCols.includes(c)).concat(baseCols.filter(c=>!x.includes(c)))}catch(_){}return baseCols}
@@ -460,6 +460,50 @@ document.addEventListener("click", function(e) {
 
 function openAI(){document.getElementById('aiPanel')?.classList.add('open');document.getElementById('aiBackdrop')?.classList.add('open');document.getElementById('aiPanel')?.setAttribute('aria-hidden','false');setTimeout(()=>document.getElementById('aiQuestion')?.focus(),50)}
 function closeAI(){document.getElementById('aiPanel')?.classList.remove('open');document.getElementById('aiBackdrop')?.classList.remove('open');document.getElementById('aiPanel')?.setAttribute('aria-hidden','true')}
-function aiAppend(role,text){const box=document.getElementById('aiMessages');if(!box)return;const d=document.createElement('div');d.className='ai-msg '+role;d.innerHTML=`<b>${role==='user'?'You':'AI Analyst'}</b><div>${esc(text)}</div>`;box.appendChild(d);box.scrollTop=box.scrollHeight;return d}
+function aiAppend(role,text){const box=document.getElementById('aiMessages');if(!box)return;const d=document.createElement('div');d.className='ai-msg '+role;d.innerHTML=`<b>${role==='user'?'You':'Analyst'}</b><div>${esc(text)}</div>`;box.appendChild(d);box.scrollTop=box.scrollHeight;return d}
 async function aiAsk(question){question=String(question||'').trim();if(!question)return;aiAppend('user',question);const loading=aiAppend('ai','Thinking…');loading.classList.add('loading');try{const j=await fetchJson('/api/ai/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question,view_mode:viewMode,filters})});loading.remove();if(!j.ok)throw Error(j.error||'AI request failed');aiAppend('ai',j.answer)}catch(e){loading.remove();aiAppend('ai','Unable to answer: '+e.message)}}
-document.getElementById('aiClose')?.addEventListener('click',closeAI);document.getElementById('aiBackdrop')?.addEventListener('click',closeAI);document.querySelectorAll('.ai-suggestions button').forEach(b=>b.addEventListener('click',()=>aiAsk(b.dataset.q)));document.getElementById('aiForm')?.addEventListener('submit',e=>{e.preventDefault();const q=document.getElementById('aiQuestion');const text=q.value.trim();if(text){q.value='';aiAsk(text)}});
+
+// AI Analyst shortcuts: "=" for Store and "(" for SKU/Product autocomplete.
+function aiShortcutItems(type,term){
+  const q=String(term||'').trim().toLowerCase();
+  if(type==='store'){
+    return [...new Set(DATA.map(r=>String(r['Store Name']??'').trim()).filter(Boolean))]
+      .filter(x=>!q||x.toLowerCase().includes(q)).sort((a,b)=>a.localeCompare(b)).slice(0,10).map(x=>({value:x,label:x}));
+  }
+  const m=new Map();
+  DATA.forEach(r=>{
+    const e=String(r['EAN Code']??'').trim(), n=String(r['Product Name']??'').trim();
+    const key=e||n;if(!key)return;
+    if(!m.has(key))m.set(key,{value:n||e,label:n||e,ean:e,name:n});
+  });
+  return [...m.values()].filter(x=>!q||x.name.toLowerCase().includes(q)||x.ean.toLowerCase().includes(q))
+    .sort((a,b)=>a.label.localeCompare(b.label,undefined,{numeric:true})).slice(0,10);
+}
+function initAIShortcuts(){
+  const ta=document.getElementById('aiQuestion'),menu=document.getElementById('aiShortcutMenu');
+  if(!ta||!menu||ta.dataset.shortcutsReady)return;
+  ta.dataset.shortcutsReady='1';let active=-1,current=[];
+  function hide(){menu.classList.remove('open');menu.innerHTML='';active=-1;current=[]}
+  function detect(){
+    const pos=ta.selectionStart??ta.value.length, before=ta.value.slice(0,pos);
+    const m=before.match(/(^|\s)([=(])([^\s]*)$/);
+    if(!m){hide();return;}
+    const type=m[2]==='='?'store':'sku',term=m[3]||'';current=aiShortcutItems(type,term);
+    if(!current.length){hide();return;}
+    menu.innerHTML=current.map((x,i)=>`<button type="button" class="ai-shortcut-option" data-i="${i}"><span>${esc(x.label)}</span>${type==='sku'&&x.ean?`<small>${esc(x.ean)}</small>`:''}</button>`).join('');
+    menu.classList.add('open');active=-1;
+    menu.querySelectorAll('.ai-shortcut-option').forEach(b=>b.addEventListener('mousedown',e=>{e.preventDefault();pick(Number(b.dataset.i));}));
+  }
+  function pick(i){const x=current[i];if(!x)return;const pos=ta.selectionStart??ta.value.length,before=ta.value.slice(0,pos),after=ta.value.slice(pos);const m=before.match(/(^|\s)([=(])([^\s]*)$/);if(!m)return;const start=before.length-m[0].length+m[1].length;const prefix=before.slice(0,start);ta.value=prefix+m[2]+x.value+' '+after;const newPos=(prefix+m[2]+x.value+' ').length;ta.setSelectionRange(newPos,newPos);hide();ta.focus();}
+  ta.addEventListener('input',detect);ta.addEventListener('click',detect);ta.addEventListener('keydown',e=>{
+    if(!menu.classList.contains('open'))return;
+    if(e.key==='ArrowDown'){e.preventDefault();active=(active+1)%current.length;menu.querySelectorAll('button').forEach((b,i)=>b.classList.toggle('active',i===active));}
+    else if(e.key==='ArrowUp'){e.preventDefault();active=(active-1+current.length)%current.length;menu.querySelectorAll('button').forEach((b,i)=>b.classList.toggle('active',i===active));}
+    else if(e.key==='Enter'&&active>=0){e.preventDefault();pick(active);}
+    else if(e.key==='Escape')hide();
+  });
+  document.addEventListener('click',e=>{if(!menu.contains(e.target)&&e.target!==ta)hide();});
+}
+document.getElementById('aiClose')?.addEventListener('click',closeAI);document.getElementById('aiBackdrop')?.addEventListener('click',closeAI);document.querySelectorAll('.ai-suggestions button').forEach(b=>b.addEventListener('click',()=>aiAsk(b.dataset.q)));document.getElementById('aiForm')?.addEventListener('submit',e=>{e.preventDefault();const q=document.getElementById('aiQuestion');const text=q.value.trim();if(text){q.value='';hideAIShortcutMenu();aiAsk(text)}});
+function hideAIShortcutMenu(){document.getElementById('aiShortcutMenu')?.classList.remove('open')}
+initAIShortcuts();
