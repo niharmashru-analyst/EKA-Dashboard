@@ -728,7 +728,7 @@ INWARD_ALIASES = {
     "po": ["po number", "po no", "po", "po id", "customer po", "customer po no", "customer po number",
            "purchase order", "purchase order no", "purchase order number",
            "external document no", "external document number", "external doc no", "ext doc no",
-           "invoice number", "invoice no", "invoice", "invoice id", "invoice number no"],
+           "invoicenumber", "invoice no", "invoice", "invoice id", "invoicenumber no"],
     # Second thing a user may search by (one row each in an order-level sheet), e.g. "Order Id".
     "alt": ["order id", "order no", "order number", "so number", "so no", "sales order", "sales order no", "sales order number"],
     "ean": ["ean code", "ean", "sku code", "sku", "barcode", "item code", "article code", "material code"],
@@ -862,8 +862,8 @@ def _parse_inward(data, kind):
             df["Product Name"] = df["Party"]
         df = df[((df["PO Key"] != "") | (df["Alt Key"] != "")) & ((df["EAN Code"] != "") | (df["Product Name"] != ""))]
         return df.reset_index(drop=True), (f"Inward sheet - {sheet}" if kind == "xlsx" else "Inward CSV"), mode
-    raise RuntimeError("Could not find the Invoice Number and order-qty columns in the inward file. "
-                       "Expected headers like 'Invoice Number' (or 'PO Number' / 'External Document No.') and 'Order Qty'. "
+    raise RuntimeError("Could not find the invoicenumber and order-qty columns in the inward file. "
+                       "Expected headers like 'invoicenumber' (or 'PO Number' / 'External Document No.') and 'Order Qty'. "
                        "First row seen -> " + (" | ".join(seen) or "sheet is empty"))
 
 
