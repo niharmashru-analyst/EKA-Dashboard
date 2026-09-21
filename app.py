@@ -721,14 +721,14 @@ INWARD_SHEET = os.getenv("INWARD_SHEET", "").strip()
 INWARD_CACHE_SECONDS = int(os.getenv("INWARD_CACHE_SECONDS", "60"))
 INWARD_SUBMISSION_API_URL = os.getenv("INWARD_SUBMISSION_API_URL", "").strip()
 
-# Header names accepted for each field. Matching is exact after lower-casing and
-# stripping punctuation, so "PO No.", "po_no" and "PO NO" all match "po no".
-# This lets the inward sheet keep its own column names.
+# Header names accepted for each field. Both workbook headers and aliases are
+# normalized through _hnorm, so `InvoiceNumber`, `Invoice Number`, and
+# `Invoice_Number` all resolve to the same field.
 INWARD_ALIASES = {
     "po": ["po number", "po no", "po", "po id", "customer po", "customer po no", "customer po number",
            "purchase order", "purchase order no", "purchase order number",
            "external document no", "external document number", "external doc no", "ext doc no",
-           "invoicenumber", "invoice no", "invoice", "invoice id", "invoicenumber no"],
+           "invoice number", "invoice no", "invoice", "invoice id", "invoice number no"],
     # Second thing a user may search by (one row each in an order-level sheet), e.g. "Order Id".
     "alt": ["order id", "order no", "order number", "so number", "so no", "sales order", "sales order no", "sales order number"],
     "ean": ["ean code", "ean", "sku code", "sku", "barcode", "item code", "article code", "material code"],
@@ -766,8 +766,16 @@ def _txt(v):
 
 
 def _po_key(v):
-    """Comparable PO id: case/space-insensitive and immune to Excel's 4500123.0."""
-    s = re.sub(r"\s+", "", _txt(v)).upper()
+    """Comparable invoice/PO id.
+
+    Handles Excel numeric values plus common user-entered prefixes such as
+    ``PO `` / ``PO:``.  This means ``PO PSI/09/26/00061`` matches a SharePoint
+    Excel cell containing ``PSI/09/26/00061`` (and vice versa).
+    """
+    s = _txt(v).strip().upper()
+    # Remove common labels users may type before the actual document number.
+    s = re.sub(r"^(?:PO|P\.O\.|INVOICE|INV)\s*[:#-]?\s*", "", s)
+    s = re.sub(r"\s+", "", s)
     return s.split(".")[0] if re.fullmatch(r"\d+\.0+", s) else s
 
 
@@ -824,7 +832,11 @@ def _find_inward_header(raw):
         heads = ["" if _blank(c) else _hnorm(c) for c in raw.iloc[i].tolist()]
         cols = {}
         for field, aliases in INWARD_ALIASES.items():
-            for a in aliases:
+            # Normalize both sheet headers and aliases. This is important for
+            # SharePoint Excel headers such as `InvoiceNumber`, `Invoice Number`,
+            # `Invoice_Number`, etc.
+            normalized_aliases = {_hnorm(a) for a in aliases}
+            for a in normalized_aliases:
                 if a in heads: cols[field] = heads.index(a); break
         if "po" not in cols and "alt" in cols: cols["po"] = cols.pop("alt")   # sheet only has "Order No"
         if cols.get("alt") == cols.get("po"): cols.pop("alt", None)
@@ -862,8 +874,8 @@ def _parse_inward(data, kind):
             df["Product Name"] = df["Party"]
         df = df[((df["PO Key"] != "") | (df["Alt Key"] != "")) & ((df["EAN Code"] != "") | (df["Product Name"] != ""))]
         return df.reset_index(drop=True), (f"Inward sheet - {sheet}" if kind == "xlsx" else "Inward CSV"), mode
-    raise RuntimeError("Could not find the invoicenumber and order-qty columns in the inward file. "
-                       "Expected headers like 'invoicenumber' (or 'PO Number' / 'External Document No.') and 'Order Qty'. "
+    raise RuntimeError("Could not find the Invoice Number and order-qty columns in the inward file. "
+                       "Expected headers like 'Invoice Number' (or 'PO Number' / 'External Document No.') and 'Order Qty'. "
                        "First row seen -> " + (" | ".join(seen) or "sheet is empty"))
 
 
