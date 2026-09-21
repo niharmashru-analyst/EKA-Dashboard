@@ -6,7 +6,20 @@
 - Store Analysis — store KPIs, stock/run-rate, sales momentum, NOD distribution, type-wise performance; clickable SKU detail with search/filter.
 - Data Table — full Stock_Data table with Forecast Qty and persistent column-sequence control.
 - Variance Analysis — Qty/Value switch, Opening + Inward - Tertiary reconciliation, live field submissions, actual-vs-system closing difference, issue filter and CSV export.
-- Field Entry — separate `/entry` URL for field staff; email-to-shop mapping, 25 SKUs/page, master SKU search/add, live counts, Stock + Tester + Total, verified submission popup.
+- Field Entry — separate `/entry` URL for field staff, with a sidebar of two pages: **Physical Stock Entry** and **Inward Validation**; email-to-shop mapping, 25 SKUs/page, master SKU search/add, live counts, Stock + Tester + Total, verified submission popup.
+
+## Inward Validation (`/entry`, sidebar → Inward Validation)
+Field staff enter their company email + a PO number and press **Fetch**. The dashboard reads that PO's SKUs and order qty from the linked inward sheet, staff type the qty actually received per SKU, and on **Submit** a variance CSV (Order vs Received, Short / Excess / Match) downloads.
+
+Environment:
+- `INWARD_EXCEL_URL` — link to the inward sheet. Works with Google Sheets, Google Drive, OneDrive/SharePoint, or any direct `.xlsx` / `.csv` link. Google Sheets must be shared as *Anyone with the link → Viewer*. Change the link any time (then restart) to point at a different sheet.
+- `INWARD_SHEET` (optional) — tab name. If omitted or not found, the first tab that has the required columns is used.
+- `INWARD_CACHE_SECONDS` (optional, default `60`) — how long the sheet is cached. A PO that isn't found triggers one automatic refresh.
+- `INWARD_SUBMISSION_API_URL` (optional) — Apps Script `/exec` URL; each submission is appended to an `Inward_Validation` tab. Use the same URL as `SUBMISSION_API_URL` after redeploying the updated `apps_script.gs` (Deploy → Manage deployments → New version), or deploy the script on any other Google Sheet. If not set, submissions are saved to the local SQLite database instead (lost when Render redeploys — the CSV is unaffected).
+
+Inward sheet columns (header names are matched flexibly; title rows above the header are fine): PO Number (`PO No`, `Purchase Order`…), EAN Code (`SKU`, `Barcode`…), Product Name (`SKU Name`, `Description`…), Order Qty (`PO Qty`, `Quantity`…). Optional: Vendor / Supplier, PO Date, Location / Warehouse — shown above the table. A PO with the same SKU on several lines is merged into one line.
+
+The email must be mapped in `User_Shop_Map`, same as Physical Stock Entry. Order qty is always re-read from the sheet on submit, never taken from the browser.
 
 ## NOD rule
 NOD is never averaged. It is calculated from current stock and L3M average sales:

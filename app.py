@@ -713,6 +713,249 @@ def entry_report_data():
     except Exception as e:
         return jsonify({"ok":False,"error":str(e)}),500
 
+# ======================================================================
+# Inward Validation - compare a PO's ordered qty with what was received
+# ======================================================================
+INWARD_EXCEL_URL = os.getenv("INWARD_EXCEL_URL", "").strip()
+INWARD_SHEET = os.getenv("INWARD_SHEET", "").strip()
+INWARD_CACHE_SECONDS = int(os.getenv("INWARD_CACHE_SECONDS", "60"))
+INWARD_SUBMISSION_API_URL = os.getenv("INWARD_SUBMISSION_API_URL", "").strip()
+
+# Header names accepted for each field. Matching is exact after lower-casing and
+# stripping punctuation, so "PO No.", "po_no" and "PO NO" all match "po no".
+# This lets the inward sheet keep its own column names.
+INWARD_ALIASES = {
+    "po": ["po number", "po no", "po", "po id", "purchase order", "purchase order no",
+           "purchase order number", "order number", "order no"],
+    "ean": ["ean code", "ean", "sku code", "sku", "barcode", "item code", "article code", "material code"],
+    "name": ["product name", "sku name", "item name", "product description", "item description",
+             "material description", "article name", "description", "product"],
+    "qty": ["order qty", "order quantity", "ordered qty", "ordered quantity", "po qty", "po quantity",
+            "qty ordered", "quantity ordered", "quantity", "qty"],
+    "vendor": ["vendor name", "vendor", "supplier name", "supplier"],
+    "date": ["po date", "order date", "date"],
+    "location": ["ship to", "delivery location", "warehouse", "location", "store name", "store"],
+}
+_inward_cache = {"ts": 0.0, "df": None, "key": "", "source": ""}
+
+
+def _hnorm(v):
+    return re.sub(r"[^a-z0-9]+", " ", str(v).lower()).strip()
+
+
+def _blank(v):
+    if v is None: return True
+    try: return bool(pd.isna(v))
+    except (TypeError, ValueError): return False
+
+
+def _txt(v):
+    """Cell -> clean display text (12.0 -> '12', Timestamp -> '03-Mar-2026')."""
+    if _blank(v): return ""
+    if isinstance(v, (pd.Timestamp, datetime)): return v.strftime("%d-%b-%Y")
+    if isinstance(v, float) and v.is_integer(): return str(int(v))
+    return str(v).strip()
+
+
+def _po_key(v):
+    """Comparable PO id: case/space-insensitive and immune to Excel's 4500123.0."""
+    s = re.sub(r"\s+", "", _txt(v)).upper()
+    return s.split(".")[0] if re.fullmatch(r"\d+\.0+", s) else s
+
+
+def _qty(v):
+    f = float(v)
+    return int(f) if f.is_integer() else round(f, 3)
+
+
+def normalize_sheet_url(url):
+    """Turn a normal 'share' link into a direct-download link.
+
+    Google Sheets / Drive links are converted here; OneDrive / SharePoint / direct
+    .xlsx links are passed through unchanged.
+    """
+    u = (url or "").strip()
+    p = urlparse(u); host = p.netloc.lower()
+    if host == "docs.google.com" and "/spreadsheets/" in p.path:
+        if "/spreadsheets/d/e/" in p.path:           # "Publish to web" link
+            q = parse_qs(p.query); q.setdefault("output", ["xlsx"])
+            return urlunparse((p.scheme, p.netloc, re.sub(r"/pub(html)?/?$", "/pub", p.path), "", urlencode(q, doseq=True), ""))
+        m = re.search(r"/spreadsheets/d/([A-Za-z0-9_-]+)", p.path)
+        if m: return f"https://docs.google.com/spreadsheets/d/{m.group(1)}/export?format=xlsx"
+    if host == "drive.google.com":
+        m = re.search(r"/file/d/([A-Za-z0-9_-]+)", p.path) or re.search(r"[?&]id=([A-Za-z0-9_-]+)", u)
+        if m: return f"https://drive.google.com/uc?export=download&id={m.group(1)}"
+    return u
+
+
+def _download_inward(url):
+    try:
+        r = requests.get(normalize_sheet_url(url), timeout=60, allow_redirects=True,
+                         headers={"User-Agent": "Mozilla/5.0"})
+        r.raise_for_status()
+    except requests.RequestException as e:
+        raise RuntimeError(f"Could not download the inward sheet: {e}")
+    data = r.content; ctype = (r.headers.get("content-type") or "").lower(); head = data[:300].lstrip().lower()
+    if data[:2] == b"PK": return data, "xlsx"
+    if data[:4] == b"\xd0\xcf\x11\xe0":
+        raise RuntimeError("The inward file is an old .xls workbook. Please save it as .xlsx and link that.")
+    if "html" in ctype or head.startswith((b"<!doctype", b"<html")):
+        raise RuntimeError("The inward link did not return a spreadsheet. Set the sheet's sharing to "
+                           "'Anyone with the link can view' and make sure the link opens the file itself.")
+    return data, "csv"
+
+
+def _find_inward_header(raw):
+    """Find the header row (title rows above it are fine) -> (row index, {field: column position})."""
+    for i in range(min(25, len(raw))):
+        heads = ["" if _blank(c) else _hnorm(c) for c in raw.iloc[i].tolist()]
+        cols = {}
+        for field, aliases in INWARD_ALIASES.items():
+            for a in aliases:
+                if a in heads: cols[field] = heads.index(a); break
+        if "po" in cols and "qty" in cols and ("ean" in cols or "name" in cols): return i, cols
+    return None, {}
+
+
+def _parse_inward(data, kind):
+    if kind == "csv":
+        try: frames = [("CSV", pd.read_csv(io.BytesIO(data), header=None, dtype=object, encoding="utf-8-sig"))]
+        except UnicodeDecodeError: frames = [("CSV", pd.read_csv(io.BytesIO(data), header=None, dtype=object, encoding="latin-1"))]
+    else:
+        xls = pd.ExcelFile(io.BytesIO(data))
+        names = ([INWARD_SHEET] if INWARD_SHEET in xls.sheet_names else []) + [s for s in xls.sheet_names if s != INWARD_SHEET]
+        frames = ((s, pd.read_excel(xls, sheet_name=s, header=None, dtype=object)) for s in names)
+    seen = []
+    for sheet, raw in frames:
+        i, cols = _find_inward_header(raw)
+        if i is None:
+            if len(raw): seen.append(f"{sheet}: " + ", ".join(_txt(c) for c in raw.iloc[0].tolist() if not _blank(c))[:120])
+            continue
+        body = raw.iloc[i + 1:].reset_index(drop=True)
+        pick = lambda f: body.iloc[:, cols[f]] if f in cols else pd.Series([""] * len(body), dtype=object)
+        df = pd.DataFrame({"PO": pick("po").map(_txt), "EAN Code": pick("ean").map(_txt),
+                           "Product Name": pick("name").map(_txt),
+                           "Order Qty": pd.to_numeric(pick("qty"), errors="coerce").fillna(0),
+                           "Vendor": pick("vendor").map(_txt), "PO Date": pick("date").map(_txt),
+                           "Location": pick("location").map(_txt)})
+        df["PO Key"] = df["PO"].map(_po_key)
+        df = df[(df["PO Key"] != "") & ((df["EAN Code"] != "") | (df["Product Name"] != ""))]
+        return df.reset_index(drop=True), (f"Inward sheet - {sheet}" if kind == "xlsx" else "Inward CSV")
+    raise RuntimeError("Could not find the PO number, SKU and order-qty columns in the inward file. "
+                       "Expected headers like 'PO Number', 'EAN Code', 'Product Name', 'Order Qty'. "
+                       "First row seen -> " + (" | ".join(seen) or "sheet is empty"))
+
+
+def load_inward(force=False):
+    key = INWARD_EXCEL_URL or "local"
+    if not force and _inward_cache["df"] is not None and _inward_cache["key"] == key \
+            and time.time() - _inward_cache["ts"] < INWARD_CACHE_SECONDS:
+        return _inward_cache["df"], _inward_cache["source"]
+    if INWARD_EXCEL_URL: data, kind = _download_inward(INWARD_EXCEL_URL)
+    else:
+        local = os.path.join(app.root_path, "data", "inward.xlsx")
+        if not os.path.exists(local):
+            raise RuntimeError("Inward Excel link is not configured. Set INWARD_EXCEL_URL on the server.")
+        with open(local, "rb") as f: data, kind = f.read(), "xlsx"
+    df, source = _parse_inward(data, kind)
+    _inward_cache.update(ts=time.time(), df=df, key=key, source=source)
+    return df, source
+
+
+def inward_po(po_text):
+    """Lines of one PO, merged per SKU: (lines, meta, po_label, source)."""
+    key = _po_key(po_text)
+    df, source = load_inward(False)
+    hit = df[df["PO Key"] == key]
+    # Not found in a cached copy? The PO may have just been added, so refresh once.
+    if hit.empty and time.time() - _inward_cache["ts"] > 10:
+        df, source = load_inward(True); hit = df[df["PO Key"] == key]
+    if hit.empty: return [], {}, "", source
+    agg = {}
+    for _, r in hit.iterrows():
+        k = r["EAN Code"] or r["Product Name"]
+        if k in agg: agg[k]["Order Qty"] += float(r["Order Qty"])
+        else: agg[k] = {"Key": k, "EAN Code": r["EAN Code"], "Product Name": r["Product Name"] or r["EAN Code"], "Order Qty": float(r["Order Qty"])}
+    lines = [{**v, "Order Qty": _qty(v["Order Qty"])} for v in agg.values()]
+    first = lambda col: next((x for x in hit[col] if x), "")
+    meta = {"vendor": first("Vendor"), "po_date": first("PO Date"), "location": first("Location")}
+    return lines, meta, hit["PO"].iloc[0], source
+
+
+def _inward_email_error(email):
+    if not email: return "Email ID is required."
+    mp, _ = load_entry_sources(False)
+    return None if (mp["Email ID"] == email).any() else "Email ID is not mapped to any shop."
+
+
+def save_local_inward(email, po, rows):
+    os.makedirs(os.path.dirname(DATABASE_PATH) or ".", exist_ok=True); ts = datetime.now(timezone.utc).isoformat()
+    with sqlite3.connect(DATABASE_PATH) as con:
+        con.execute("""CREATE TABLE IF NOT EXISTS inward_validations(id INTEGER PRIMARY KEY AUTOINCREMENT, submitted_at TEXT, email TEXT, po_number TEXT, ean_code TEXT, product_name TEXT, order_qty REAL, received_qty REAL, variance_qty REAL, status TEXT)""")
+        con.executemany("INSERT INTO inward_validations(submitted_at,email,po_number,ean_code,product_name,order_qty,received_qty,variance_qty,status) VALUES(?,?,?,?,?,?,?,?,?)",
+                        [(ts, email, po, r["EAN Code"], r["Product Name"], r["Order Qty"], r["Received Qty"], r["Variance Qty"], r["Status"]) for r in rows])
+    return len(rows)
+
+
+def save_remote_inward(email, po, rows):
+    """POST to the Apps Script web app (see apps_script.gs, kind='inward')."""
+    body = {"kind": "inward", "email": email, "po_number": po, "rows": rows}
+    if SUBMISSION_API_SECRET: body["secret"] = SUBMISSION_API_SECRET
+    r = requests.post(INWARD_SUBMISSION_API_URL, json=body, timeout=30); r.raise_for_status()
+    res = r.json()
+    if not res.get("ok"): raise RuntimeError(res.get("error") or "Google Apps Script rejected the inward submission.")
+    if int(res.get("saved_rows", 0) or 0) != len(rows):
+        raise RuntimeError(f"Submission mismatch: sent {len(rows)} rows but Apps Script saved {res.get('saved_rows')}.")
+    return len(rows)
+
+
+@app.get("/api/inward/fetch")
+def inward_fetch():
+    try:
+        email = request.args.get("email", "").strip().lower(); po = request.args.get("po", "").strip()
+        err = _inward_email_error(email)
+        if err: return jsonify({"ok": False, "error": err}), 403
+        if not po: return jsonify({"ok": False, "error": "Enter a PO number."}), 400
+        lines, meta, label, source = inward_po(po)
+        if not lines: return jsonify({"ok": False, "error": f"PO {po} was not found in the inward sheet."}), 404
+        resp = jsonify({"ok": True, "po": label, "meta": meta, "source": source, "rows": lines})
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+    except Exception as e: return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.post("/api/inward/submit")
+def inward_submit():
+    """Re-reads the PO from the sheet (order qty is never taken from the browser),
+    computes variance, saves it and returns the rows for the CSV report."""
+    try:
+        p = request.get_json(force=True) or {}
+        email = str(p.get("email", "")).strip().lower(); po = str(p.get("po", "")).strip()
+        err = _inward_email_error(email)
+        if err: return jsonify({"ok": False, "error": err}), 403
+        lines, _, label, _ = inward_po(po)
+        if not lines: return jsonify({"ok": False, "error": f"PO {po} was not found in the inward sheet."}), 404
+        got = {}
+        for r in p.get("rows", []) or []:
+            try: v = float(r.get("Received Qty"))
+            except (TypeError, ValueError): continue
+            if v == v and 0 <= v < float("inf"): got[str(r.get("Key", ""))] = v
+        missing = [l for l in lines if l["Key"] not in got]
+        if missing:
+            return jsonify({"ok": False, "error": f"Received qty is missing or invalid for {len(missing)} SKU(s). Enter 0 if nothing was received."}), 400
+        rows = []
+        for l in lines:
+            recv = got[l["Key"]]; var = round(recv - l["Order Qty"], 3)
+            rows.append({"EAN Code": l["EAN Code"], "Product Name": l["Product Name"], "Order Qty": l["Order Qty"],
+                         "Received Qty": _qty(recv), "Variance Qty": _qty(var),
+                         "Variance %": round(var / l["Order Qty"] * 100, 1) if l["Order Qty"] else None,
+                         "Status": "Match" if var == 0 else ("Short" if var < 0 else "Excess")})
+        saved = save_remote_inward(email, label, rows) if INWARD_SUBMISSION_API_URL else save_local_inward(email, label, rows)
+        return jsonify({"ok": True, "po": label, "saved_rows": saved, "rows": rows,
+                        "submitted_at": datetime.now(timezone.utc).isoformat()})
+    except Exception as e: return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.get("/api/submissions")
 def submissions():
     try:
