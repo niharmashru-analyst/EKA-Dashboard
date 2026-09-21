@@ -728,7 +728,7 @@ INWARD_ALIASES = {
     "po": ["po number", "po no", "po", "po id", "customer po", "customer po no", "customer po number",
            "purchase order", "purchase order no", "purchase order number",
            "external document no", "external document number", "external doc no", "ext doc no",
-           "invoice number", "invoice no", "invoice", "invoice id", "invoice number no"],
+           "invoice number", "invoicenumber", "invoice no", "invoiceno", "invoice", "invoice id", "invoice number no"],
     # Second thing a user may search by (one row each in an order-level sheet), e.g. "Order Id".
     "alt": ["order id", "order no", "order number", "so number", "so no", "sales order", "sales order no", "sales order number"],
     "ean": ["ean code", "ean", "sku code", "sku", "barcode", "item code", "article code", "material code"],
@@ -875,7 +875,7 @@ def _parse_inward(data, kind):
         df = df[((df["PO Key"] != "") | (df["Alt Key"] != "")) & ((df["EAN Code"] != "") | (df["Product Name"] != ""))]
         return df.reset_index(drop=True), (f"Inward sheet - {sheet}" if kind == "xlsx" else "Inward CSV"), mode
     raise RuntimeError("Could not find the Invoice Number and order-qty columns in the inward file. "
-                       "Expected headers like 'Invoice Number' (or 'PO Number' / 'External Document No.') and 'Order Qty'. "
+                       "Expected headers like 'InvoiceNumber' / 'Invoice Number' (or 'PO Number' / 'External Document No.') and 'Order Qty'. "
                        "First row seen -> " + (" | ".join(seen) or "sheet is empty"))
 
 
@@ -962,9 +962,9 @@ def inward_fetch():
         email = request.args.get("email", "").strip().lower(); po = request.args.get("po", "").strip()
         err = _inward_email_error(email)
         if err: return jsonify({"ok": False, "error": err}), 403
-        if not po: return jsonify({"ok": False, "error": "Enter a PO number."}), 400
+        if not po: return jsonify({"ok": False, "error": "Enter an Invoice Number."}), 400
         lines, meta, label, source, mode, by = inward_po(po)
-        if not lines: return jsonify({"ok": False, "error": f"PO {po} was not found in the inward sheet."}), 404
+        if not lines: return jsonify({"ok": False, "error": f"Invoice Number {po} was not found in the inward sheet."}), 404
         resp = jsonify({"ok": True, "po": label, "matched_by": by, "mode": mode, "labels": _inward_labels(mode),
                         "meta": meta, "source": source, "rows": lines})
         resp.headers["Cache-Control"] = "no-store"
@@ -982,7 +982,7 @@ def inward_submit():
         err = _inward_email_error(email)
         if err: return jsonify({"ok": False, "error": err}), 403
         lines, _, label, _, mode, _ = inward_po(po)
-        if not lines: return jsonify({"ok": False, "error": f"PO {po} was not found in the inward sheet."}), 404
+        if not lines: return jsonify({"ok": False, "error": f"Invoice Number {po} was not found in the inward sheet."}), 404
         got, bad = {}, 0
         for r in p.get("rows", []) or []:
             raw = r.get("Received Qty")
