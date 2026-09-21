@@ -727,7 +727,8 @@ INWARD_SUBMISSION_API_URL = os.getenv("INWARD_SUBMISSION_API_URL", "").strip()
 INWARD_ALIASES = {
     "po": ["po number", "po no", "po", "po id", "customer po", "customer po no", "customer po number",
            "purchase order", "purchase order no", "purchase order number",
-           "external document no", "external document number", "external doc no", "ext doc no"],
+           "external document no", "external document number", "external doc no", "ext doc no",
+           "invoice number", "invoice no", "invoice", "invoice id", "invoice number no"],
     # Second thing a user may search by (one row each in an order-level sheet), e.g. "Order Id".
     "alt": ["order id", "order no", "order number", "so number", "so no", "sales order", "sales order no", "sales order number"],
     "ean": ["ean code", "ean", "sku code", "sku", "barcode", "item code", "article code", "material code"],
@@ -792,6 +793,12 @@ def normalize_sheet_url(url):
     if host == "drive.google.com":
         m = re.search(r"/file/d/([A-Za-z0-9_-]+)", p.path) or re.search(r"[?&]id=([A-Za-z0-9_-]+)", u)
         if m: return f"https://drive.google.com/uc?export=download&id={m.group(1)}"
+    # SharePoint / OneDrive Excel share links normally open an HTML viewer page.
+    # Adding download=1 makes Microsoft return the actual workbook bytes instead.
+    if "sharepoint.com" in host or "onedrive.live.com" in host or "1drv.ms" in host:
+        q = parse_qs(p.query, keep_blank_values=True)
+        q["download"] = ["1"]
+        return urlunparse((p.scheme, p.netloc, p.path, p.params, urlencode(q, doseq=True), p.fragment))
     return u
 
 
@@ -807,8 +814,7 @@ def _download_inward(url):
     if data[:4] == b"\xd0\xcf\x11\xe0":
         raise RuntimeError("The inward file is an old .xls workbook. Please save it as .xlsx and link that.")
     if "html" in ctype or head.startswith((b"<!doctype", b"<html")):
-        raise RuntimeError("The inward link did not return a spreadsheet. Set the sheet's sharing to "
-                           "'Anyone with the link can view' and make sure the link opens the file itself.")
+        raise RuntimeError("The inward link did not return the Excel file. The inward source is expected to be a SharePoint/OneDrive Excel workbook (not a Google Sheet). Use the SharePoint/OneDrive share link to the .xlsx file and make sure the file is accessible to the dashboard.")
     return data, "csv"
 
 
@@ -856,8 +862,8 @@ def _parse_inward(data, kind):
             df["Product Name"] = df["Party"]
         df = df[((df["PO Key"] != "") | (df["Alt Key"] != "")) & ((df["EAN Code"] != "") | (df["Product Name"] != ""))]
         return df.reset_index(drop=True), (f"Inward sheet - {sheet}" if kind == "xlsx" else "Inward CSV"), mode
-    raise RuntimeError("Could not find the PO number and order-qty columns in the inward file. "
-                       "Expected headers like 'PO Number' (or 'External Document No.') and 'Order Qty'. "
+    raise RuntimeError("Could not find the Invoice Number and order-qty columns in the inward file. "
+                       "Expected headers like 'Invoice Number' (or 'PO Number' / 'External Document No.') and 'Order Qty'. "
                        "First row seen -> " + (" | ".join(seen) or "sheet is empty"))
 
 

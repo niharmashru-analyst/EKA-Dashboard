@@ -12,7 +12,7 @@
 Field staff enter their company email + a PO number and press **Fetch**. The dashboard reads that PO's SKUs and order qty from the linked inward sheet, staff type the qty actually received per SKU, and on **Submit** a variance CSV (Order vs Received, Short / Excess / Match) downloads.
 
 Environment:
-- `INWARD_EXCEL_URL` — link to the inward sheet. Works with Google Sheets, Google Drive, OneDrive/SharePoint, or any direct `.xlsx` / `.csv` link. Google Sheets must be shared as *Anyone with the link → Viewer*. Change the link any time (then restart) to point at a different sheet.
+- `INWARD_EXCEL_URL` — SharePoint/OneDrive Excel share link for the inward workbook (direct `.xlsx` links also work). The app automatically adds `download=1` to Microsoft share links so it downloads the Excel file instead of the HTML viewer. The inward workbook can use `Invoice Number` as the lookup header; `PO Number` / `External Document No.` are also accepted as aliases. Change the link any time (then restart) to point at a different workbook.
 - `INWARD_SHEET` (optional) — tab name. If omitted or not found, the first tab that has the required columns is used.
 - `INWARD_CACHE_SECONDS` (optional, default `60`) — how long the sheet is cached. A PO that isn't found triggers one automatic refresh.
 - `INWARD_SUBMISSION_API_URL` (optional) — Apps Script `/exec` URL; each submission is appended to an `Inward_Validation` tab. Use the same URL as `SUBMISSION_API_URL` after redeploying the updated `apps_script.gs` (Deploy → Manage deployments → New version), or deploy the script on any other Google Sheet. If not set, submissions are saved to the local SQLite database instead (lost when Render redeploys — the CSV is unaffected).
@@ -77,3 +77,6 @@ git add .
 git commit -m "Final dashboard analytics and field entry update"
 git push origin main
 ```
+
+## Inward Validation Google Sheet sharing
+The Apps Script now automatically attempts to set the bound Google Spreadsheet to **Anyone with the link → Viewer** whenever the web app is accessed or an inward submission is saved. It also supports `?action=sheet` on the Apps Script `/exec` URL, which returns the actual Google Sheets `/edit` URL (not an export/download URL). If your Google Workspace administrator blocks public link sharing, the script will log that restriction and an admin must enable external link sharing.

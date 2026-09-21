@@ -51,7 +51,7 @@
     const email = $('inEmail').value.trim().toLowerCase();
     const q = $('inPo').value.trim();
     if (!email) { msg('Enter your company email first.'); $('inEmail').focus(); return; }
-    if (!q) { msg('Enter a PO number.'); $('inPo').focus(); return; }
+    if (!q) { msg('Enter an Invoice Number.'); $('inPo').focus(); return; }
     if (po && entered() > 0 && !confirm('Fetching again will discard the quantities you have entered. Continue?')) return;
     const btn = $('inFetch');
     btn.disabled = true; btn.textContent = 'Fetching…'; msg('');
@@ -77,7 +77,7 @@
     const chips = [m.vendor && `Vendor: ${m.vendor}`, m.po_date && `PO Date: ${m.po_date}`, m.location && `Location: ${m.location}`].filter(Boolean).map(esc).join(' &nbsp;•&nbsp; ');
     $('inResult').classList.remove('hidden');
     $('inResult').innerHTML = `
-      <div class="inward-po-head"><b>PO ${esc(po.label)}</b>${chips ? `<div class="muted">${chips}</div>` : ''}</div>
+      <div class="inward-po-head"><b>Invoice ${esc(po.label)}</b>${chips ? `<div class="muted">${chips}</div>` : ''}</div>
       <div class="entry-summary inward-summary">
         <div class="entry-stat"><span>${isOrder ? 'Lines' : 'SKUs'} Entered</span><strong id="inStatSku">0</strong><small id="inStatSkuSub"></small></div>
         <div class="entry-stat"><span>Order Qty</span><strong id="inStatOrder">0</strong><small>Total on this PO</small></div>
@@ -170,9 +170,9 @@
       const c = s => j.rows.filter(r => r['Status'] === s).length;
       const net = r3(j.rows.reduce((a, r) => a + r['Variance Qty'], 0));
       showPopup('Inward Validation Submitted',
-        `PO ${j.po}: ${fmt(j.rows.length)} ${j.mode === 'order' ? 'order line' : 'SKU'}(s) verified — ${c('Match')} matched, ${c('Short')} short, ${c('Excess')} excess (net variance ${net > 0 ? '+' : ''}${fmt(net)}). The variance CSV has been downloaded.`, true, true);
+        `Invoice ${j.po}: ${fmt(j.rows.length)} ${j.mode === 'order' ? 'order line' : 'SKU'}(s) verified — ${c('Match')} matched, ${c('Short')} short, ${c('Excess')} excess (net variance ${net > 0 ? '+' : ''}${fmt(net)}). The variance CSV has been downloaded.`, true, true);
       po = null; $('inResult').classList.add('hidden'); $('inResult').innerHTML = ''; $('inPo').value = '';
-      msg(`PO ${j.po} submitted successfully.`, true);
+      msg(`Invoice ${j.po} submitted successfully.`, true);
     } catch (e) {
       showPopup('Submission Failed', (e.message || 'The submission could not be completed.') + ' Your entries were not cleared.', false, false);
       msg(`Submission failed: ${e.message}`);
@@ -192,7 +192,7 @@
     const p = n => String(n).padStart(2, '0');
     const stamp = `${at.getFullYear()}-${p(at.getMonth() + 1)}-${p(at.getDate())} ${p(at.getHours())}:${p(at.getMinutes())}`;
     const sorted = [...rows].sort((a, b) => (a['Status'] === 'Match') - (b['Status'] === 'Match') || Math.abs(b['Variance Qty']) - Math.abs(a['Variance Qty']));
-    const head = ['PO Number', lastReport.labels.code, lastReport.labels.name, 'Order Qty', 'Received Qty', 'Variance Qty', 'Variance %', 'Status', 'Received By', 'Submitted At'];
+    const head = ['Invoice Number', lastReport.labels.code, lastReport.labels.name, 'Order Qty', 'Received Qty', 'Variance Qty', 'Variance %', 'Status', 'Received By', 'Submitted At'];
     const lines = [head.join(',')].concat(sorted.map(r => [
       csvCell(label, true), csvCell(r['Code'], true), csvCell(r['Name'], true), r['Order Qty'], r['Received Qty'], r['Variance Qty'],
       r['Variance %'] === null ? '' : r['Variance %'], r['Status'], csvCell(email, true), stamp
