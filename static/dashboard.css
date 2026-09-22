@@ -179,3 +179,6 @@ table thead th, table tbody td { text-align: center !important; }
 @media(max-width:1100px){.entry-shell.with-side{margin-left:190px;padding:24px}}
 @media(max-width:700px){.entry-shell.with-side{margin-left:0;padding:14px}.entry-mobilebar{display:flex;align-items:center;gap:12px;margin-bottom:14px}.entry-mobilebar .brand-sub{color:#64748B}.entry-shell.with-side .entry-card{padding:18px}.inward-summary{grid-template-columns:1fr 1fr}.inward-tools{flex-direction:column;align-items:flex-start}.inward-search{max-width:none}}
 #entrySide .brand-name{font-size:17px;white-space:nowrap}#entrySide .nav{display:flex;align-items:center;gap:10px;line-height:1.3}#entrySide .nav span{margin-left:0}
+
+/* Inward line-level source columns */
+.inward-table-wrap{overflow:auto;max-width:100%;max-height:70vh}.inward-table{min-width:2600px}.inward-table th,.inward-table td{white-space:nowrap;vertical-align:middle}.inward-table th.name,.inward-table td.name{min-width:220px;max-width:360px;white-space:normal}.inward-table .inward-num{min-width:110px}

@@ -10,7 +10,7 @@ const SHEET_NAME = 'Submissions';
 const HEADERS = ['submitted_at','email','store_name','ean_code','product_name','stock','tester','total'];
 // Inward Validation (PO receiving check) - saved to its own tab, only when the request has kind:'inward'.
 const INWARD_SHEET_NAME = 'Inward_Validation';
-const INWARD_HEADERS = ['submitted_at','email','po_number','line_code','line_name','order_qty','received_qty','variance_qty','status'];
+const INWARD_HEADERS = ['submitted_at','email','document_no','shop_name','transfer_to_code','ean','description','quantity','received_qty','variance_qty','variance_pct','status','line_data_json'];
 
 function json_(obj){return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);}
 function check_(secret){return !SECRET || secret===SECRET;}
@@ -37,7 +37,7 @@ function saveInward_(body){
   let sh=ss.getSheetByName(INWARD_SHEET_NAME);
   if(!sh)sh=ss.insertSheet(INWARD_SHEET_NAME);if(sh.getLastRow()===0)sh.appendRow(INWARD_HEADERS);
   const now=new Date().toISOString();
-  const out=rows.map(r=>[now,email,po,r['Code']||'',r['Name']||'',Number(r['Order Qty']||0),Number(r['Received Qty']||0),Number(r['Variance Qty']||0),r['Status']||'']);
+  const out=rows.map(r=>[now,email,r['Document No.']||po,r['Shop Name']||'',r['Transfer-to Code']||'',r['EAN']||'',r['Description']||'',Number(r['Quantity']||0),Number(r['Received Qty']||0),Number(r['Variance Qty']||0),r['Variance %']===null?'':Number(r['Variance %']),r['Status']||'',JSON.stringify(r)]);
   sh.getRange(sh.getLastRow()+1,1,out.length,INWARD_HEADERS.length).setValues(out);
   return json_({ok:true,saved_rows:out.length});
 }

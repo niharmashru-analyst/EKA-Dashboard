@@ -1,0 +1,24 @@
+{
+  "users": {
+    "user@company.com": [
+      {
+        "store_code": "D009",
+        "store_name": "H&B-NCR DC",
+        "city": "Delhi",
+        "region": "North"
+      },
+      {
+        "store_code": "TOSP",
+        "store_name": "Metro Cash_TOSP",
+        "city": "Hyderabad",
+        "region": "South"
+      },
+      {
+        "store_code": "TOQS",
+        "store_name": "Metro_East_Jadavpur_Kolkata_TOQS",
+        "city": "Kolkata",
+        "region": "East"
+      }
+    ]
+  }
+}

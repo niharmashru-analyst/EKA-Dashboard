@@ -32,6 +32,9 @@ EXCEL_SHEET = os.getenv("EXCEL_SHEET", "Stock_Data").strip()
 VARIANCE_EXCEL_URL = os.getenv("VARIANCE_EXCEL_URL", "").strip()
 VARIANCE_SHEET = os.getenv("VARIANCE_SHEET", "Variance_Data").strip()
 CACHE_SECONDS = int(os.getenv("CACHE_SECONDS", "900"))
+MAPPING_JSON_PATH = os.getenv("MAPPING_JSON_PATH", os.path.join(app.root_path, "data", "mapping.json")).strip()
+MAPPING_JSON_URL = os.getenv("MAPPING_JSON_URL", "").strip()
+MAPPING_CACHE_SECONDS = int(os.getenv("MAPPING_CACHE_SECONDS", "900"))
 SUBMISSION_API_URL = os.getenv("SUBMISSION_API_URL", "").strip()
 SUBMISSION_API_SECRET = os.getenv("SUBMISSION_API_SECRET", "").strip()
 DATABASE_PATH = os.getenv("DATABASE_PATH", os.path.join(app.root_path, "data", "submissions.db"))
@@ -48,7 +51,7 @@ _cache = {
     "workbook_ts": 0, "workbook_raw": None, "workbook_url": "", "workbook_sheets": [], "workbook_xls": None,
     "stock_ts": 0, "stock_df": None, "stock_source": "",
     "var_ts": 0, "var_df": None, "var_source": "",
-    "map_ts": 0, "map_df": None, "master_ts": 0, "master_df": None,
+    "map_ts": 0, "map_df": None, "map_source": "", "master_ts": 0, "master_df": None,
 }
 
 
@@ -162,22 +165,110 @@ def load_stock(force=False):
     return _cache["stock_df"].copy()
 
 
+def clean_json_map(payload):
+    """Convert the VBA mapping.json format into the internal mapping DataFrame.
+
+    Supported JSON:
+    {
+      "users": {
+        "email@company.com": [
+          {"store_code":"D009", "store_name":"H&B-NCR DC", "city":"Delhi", "region":"North"}
+        ]
+      }
+    }
+
+    A simple email -> ["Store 1", "Store 2"] format is also accepted.
+    """
+    users = payload.get("users", payload) if isinstance(payload, dict) else {}
+    records = []
+    if not isinstance(users, dict):
+        raise RuntimeError("mapping.json must contain a 'users' object.")
+
+    for raw_email, raw_stores in users.items():
+        email = str(raw_email or "").strip().lower()
+        if not email:
+            continue
+        if isinstance(raw_stores, dict):
+            raw_stores = [raw_stores]
+        if not isinstance(raw_stores, list):
+            continue
+        for shop in raw_stores:
+            if isinstance(shop, str):
+                store_name, store_code, city, region = shop.strip(), "", "", ""
+            elif isinstance(shop, dict):
+                store_name = str(shop.get("store_name", shop.get("Store Name", shop.get("shop_name", shop.get("Shop Name", "")))) or "").strip()
+                store_code = str(shop.get("store_code", shop.get("Store Code", "")) or "").strip()
+                city = str(shop.get("city", shop.get("City", "")) or "").strip()
+                region = str(shop.get("region", shop.get("Region", "")) or "").strip()
+            else:
+                continue
+            if store_name:
+                records.append({"Email ID": email, "Store Name": store_name,
+                                "Store Code": store_code, "City": city, "Region": region})
+
+    if not records:
+        raise RuntimeError("mapping.json contains no valid email-to-store mappings.")
+    return pd.DataFrame(records).drop_duplicates(subset=["Email ID", "Store Name"], keep="first")
+
+
+def load_mapping(force=False):
+    """Load the lightweight JSON mapping. This is the fast path for Entry email/shop lookup."""
+    now = time.time()
+    if not force and _cache.get("map_df") is not None and now - _cache.get("map_ts", 0) < MAPPING_CACHE_SECONDS:
+        return _cache["map_df"].copy()
+
+    payload = None
+    source = ""
+    if MAPPING_JSON_URL:
+        try:
+            r = requests.get(MAPPING_JSON_URL, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+            r.raise_for_status()
+            payload = r.json()
+            source = "Linked JSON"
+        except Exception as e:
+            raise RuntimeError(f"Could not load MAPPING_JSON_URL: {e}")
+    else:
+        path = MAPPING_JSON_PATH
+        if not os.path.exists(path):
+            raise RuntimeError(f"Mapping JSON not found: {path}. Upload mapping.json to the data folder or set MAPPING_JSON_URL.")
+        try:
+            with open(path, "r", encoding="utf-8-sig") as f:
+                payload = json.load(f)
+            source = f"Bundled JSON • {os.path.basename(path)}"
+        except Exception as e:
+            raise RuntimeError(f"Could not read mapping JSON: {e}")
+
+    mp = clean_json_map(payload)
+    _cache["map_df"] = mp
+    _cache["map_ts"] = now
+    _cache["map_source"] = source
+    return mp.copy()
+
+
+def load_master(force=False):
+    now = time.time()
+    if not force and _cache.get("master_df") is not None and now - _cache.get("master_ts", 0) < CACHE_SECONDS:
+        return _cache["master_df"].copy()
+    if EXCEL_URL:
+        raw = workbook_raw(EXCEL_URL, force)
+        if force or _cache.get("workbook_xls") is None:
+            _cache["workbook_xls"] = pd.ExcelFile(io.BytesIO(raw))
+        xls = _cache["workbook_xls"]
+        master = clean_master(pd.read_excel(xls, sheet_name="SKU_Master")) if "SKU_Master" in xls.sheet_names else pd.DataFrame(columns=MASTER_REQUIRED)
+    else:
+        path = os.path.join(app.root_path, "data", "data.xlsx")
+        if not os.path.exists(path):
+            raise RuntimeError("No linked Excel configured and data.xlsx is missing.")
+        xls = pd.ExcelFile(path)
+        master = clean_master(pd.read_excel(xls, sheet_name="SKU_Master")) if "SKU_Master" in xls.sheet_names else pd.DataFrame(columns=MASTER_REQUIRED)
+    _cache["master_df"] = master
+    _cache["master_ts"] = now
+    return master.copy()
+
+
 def load_entry_sources(force=False):
-    now=time.time()
-    if force or _cache["map_df"] is None or _cache["master_df"] is None or now-_cache["map_ts"]>=CACHE_SECONDS or now-_cache["master_ts"]>=CACHE_SECONDS:
-        if EXCEL_URL:
-            raw=workbook_raw(EXCEL_URL, force)
-            if force or _cache.get("workbook_xls") is None:
-                _cache["workbook_xls"] = pd.ExcelFile(io.BytesIO(raw))
-            xls=_cache["workbook_xls"]
-            mp=clean_map(pd.read_excel(xls,sheet_name="User_Shop_Map")) if "User_Shop_Map" in xls.sheet_names else pd.DataFrame(columns=MAP_REQUIRED)
-            master=clean_master(pd.read_excel(xls,sheet_name="SKU_Master")) if "SKU_Master" in xls.sheet_names else pd.DataFrame(columns=MASTER_REQUIRED)
-        else:
-            path=os.path.join(app.root_path,"data","data.xlsx")
-            mp=clean_map(pd.read_excel(path,sheet_name="User_Shop_Map")) if os.path.exists(path) and "User_Shop_Map" in pd.ExcelFile(path).sheet_names else pd.DataFrame(columns=MAP_REQUIRED)
-            master=clean_master(pd.read_excel(path,sheet_name="SKU_Master")) if os.path.exists(path) and "SKU_Master" in pd.ExcelFile(path).sheet_names else pd.DataFrame(columns=MASTER_REQUIRED)
-        _cache["map_df"]=mp; _cache["master_df"]=master; _cache["map_ts"]=now; _cache["master_ts"]=now
-    return _cache["map_df"].copy(), _cache["master_df"].copy()
+    """Compatibility wrapper: mapping comes from JSON; SKU master remains in Excel."""
+    return load_mapping(force), load_master(force)
 
 
 def load_submissions_live():
@@ -600,13 +691,28 @@ def api_variance():
 @app.get("/api/entry-meta")
 def entry_meta():
     try:
-        stock=load_stock(False); mp,master=load_entry_sources(False)
-        email=request.args.get("email","").strip().lower(); stores=sorted(mp.loc[mp["Email ID"]==email,"Store Name"].unique().tolist()) if email else []
-        if email and not stores: return jsonify({"ok":False,"error":"Email ID is not mapped to any shop."}),404
+        email=request.args.get("email","").strip().lower()
         store=request.args.get("store","").strip()
-        available=stock[stock["Store Name"].astype(str)==store][["EAN Code","Product Name"]].drop_duplicates().to_dict(orient="records") if store else []
-        return jsonify({"ok":True,"stores":stores,"selected_store":store,"available_skus":available,"master_skus":master[["EAN Code","Product Name"]].to_dict(orient="records")})
-    except Exception as e: return jsonify({"ok":False,"error":str(e)}),500
+
+        # Fast path: email -> mapped shops comes entirely from mapping.json.
+        # This request does NOT download/read the large Excel workbook.
+        mp=load_mapping(False)
+        stores=sorted(mp.loc[mp["Email ID"]==email,"Store Name"].unique().tolist()) if email else []
+        if email and not stores:
+            return jsonify({"ok":False,"error":"Email ID is not mapped to any shop."}),404
+
+        available=[]
+        master_skus=[]
+        if store:
+            # Only after the user selects a shop do we load the heavier Excel sources.
+            stock=load_stock(False)
+            master=load_master(False)
+            available=stock[stock["Store Name"].astype(str).str.strip()==store][["EAN Code","Product Name"]].drop_duplicates().to_dict(orient="records")
+            master_skus=master[["EAN Code","Product Name"]].to_dict(orient="records")
+
+        return jsonify({"ok":True,"stores":stores,"selected_store":store,"available_skus":available,"master_skus":master_skus,"mapping_source":_cache.get("map_source","")})
+    except Exception as e:
+        return jsonify({"ok":False,"error":str(e)}),500
 
 @app.post("/api/submit")
 def submit():
@@ -714,35 +820,76 @@ def entry_report_data():
         return jsonify({"ok":False,"error":str(e)}),500
 
 # ======================================================================
-# Inward Validation - compare a PO's ordered qty with what was received
+# Inward Validation - Invoice/Document based, line-level validation
 # ======================================================================
 INWARD_EXCEL_URL = os.getenv("INWARD_EXCEL_URL", "").strip()
 INWARD_SHEET = os.getenv("INWARD_SHEET", "").strip()
 INWARD_CACHE_SECONDS = int(os.getenv("INWARD_CACHE_SECONDS", "60"))
 INWARD_SUBMISSION_API_URL = os.getenv("INWARD_SUBMISSION_API_URL", "").strip()
 
-# Header names accepted for each field. Both workbook headers and aliases are
-# normalized through _hnorm, so `InvoiceNumber`, `Invoice Number`, and
-# `Invoice_Number` all resolve to the same field.
-INWARD_ALIASES = {
-    "po": ["po number", "po no", "po", "po id", "customer po", "customer po no", "customer po number",
-           "purchase order", "purchase order no", "purchase order number",
-           "external document no", "external document number", "external doc no", "ext doc no",
-           "invoice number", "invoicenumber", "invoice no", "invoiceno", "invoice", "invoice id", "invoice number no"],
-    # Second thing a user may search by (one row each in an order-level sheet), e.g. "Order Id".
-    "alt": ["order id", "order no", "order number", "so number", "so no", "sales order", "sales order no", "sales order number"],
-    "ean": ["ean code", "ean", "sku code", "sku", "barcode", "item code", "article code", "material code"],
-    "name": ["product name", "sku name", "item name", "product description", "item description",
-             "material description", "article name", "description", "product"],
-    "party": ["customer name", "customer", "dealer name", "dealer"],
-    "qty": ["order qty", "order quantity", "ordered qty", "ordered quantity", "po qty", "po quantity",
-            "qty ordered", "quantity ordered", "quantity", "qty"],
-    "vendor": ["vendor name", "vendor", "supplier name", "supplier"],
-    "date": ["po date", "order date", "date"],
-    "location": ["ship to", "delivery location", "warehouse", "location", "store name", "store"],
+# Exact columns the Entry page / variance CSV exposes.
+INWARD_OUTPUT_HEADERS = [
+    "Document No.", "Line No.", "Item No.", "Quantity", "Unit of Measure", "EAN", "Description",
+    "Shortcut Dimension 1 Code", "Shortcut Dimension 2 Code", "Gen. Prod. Posting Group",
+    "Inventory Posting Group", "Quantity (Base)", "Qty. per Unit of Measure", "Unit of Measure Code",
+    "Gross Weight", "Net Weight", "Unit Volume", "Variant Code", "Units per Parcel", "Description 2",
+    "Transfer Order No.", "Receipt Date", "Shipping Agent Code", "Shipping Agent Service Code",
+    "In-Transit Code", "Transfer-from Code", "Transfer-to Code", "Item Rcpt. Entry No.", "Shipping Time",
+    "Dimension Set ID", "Item Category Code", "Transfer-To Bin Code", "Custom Duty Amount", "Amount",
+    "GST Credit", "GST Group Code", "HSN/SAC Code", "Exempted", "GST Assessable Value", "Unit Price", "Shop Name"
+]
+
+# Source aliases. The six important business mappings are explicit:
+# Transfer-to Code <- Code of Party
+# Shop Name        <- Party Name
+# Document No.     <- InvoiceNumber
+# EAN              <- EAN
+# Description      <- SKU Name
+# Quantity         <- Sales Qty
+INWARD_FIELD_ALIASES = {
+    "Document No.": ["Document No.", "Document No", "InvoiceNumber", "Invoice Number", "Invoice No", "PO Number", "PO No", "External Document No."],
+    "Line No.": ["Line No.", "Line No", "Line Number"],
+    "Item No.": ["Item No.", "Item No", "Item Number"],
+    "Quantity": ["Sales Qty", "Quantity", "Qty", "Order Qty", "PO Qty"],
+    "Unit of Measure": ["Unit of Measure"],
+    "EAN": ["EAN", "EAN Code", "Barcode"],
+    "Description": ["SKU Name", "Description", "Product Name", "Item Name"],
+    "Shortcut Dimension 1 Code": ["Shortcut Dimension 1 Code"],
+    "Shortcut Dimension 2 Code": ["Shortcut Dimension 2 Code"],
+    "Gen. Prod. Posting Group": ["Gen. Prod. Posting Group"],
+    "Inventory Posting Group": ["Inventory Posting Group"],
+    "Quantity (Base)": ["Quantity (Base)"],
+    "Qty. per Unit of Measure": ["Qty. per Unit of Measure"],
+    "Unit of Measure Code": ["Unit of Measure Code"],
+    "Gross Weight": ["Gross Weight"],
+    "Net Weight": ["Net Weight"],
+    "Unit Volume": ["Unit Volume"],
+    "Variant Code": ["Variant Code"],
+    "Units per Parcel": ["Units per Parcel"],
+    "Description 2": ["Description 2"],
+    "Transfer Order No.": ["Transfer Order No.", "Transfer Order Number"],
+    "Receipt Date": ["Receipt Date", "Wh Receiving Date", "Receiving Date"],
+    "Shipping Agent Code": ["Shipping Agent Code"],
+    "Shipping Agent Service Code": ["Shipping Agent Service Code"],
+    "In-Transit Code": ["In-Transit Code", "In Transit Code"],
+    "Transfer-from Code": ["Transfer-from Code", "Transfer From Code"],
+    "Transfer-to Code": ["Code of Party", "Transfer-to Code", "Transfer To Code"],
+    "Item Rcpt. Entry No.": ["Item Rcpt. Entry No.", "Item Receipt Entry No."],
+    "Shipping Time": ["Shipping Time"],
+    "Dimension Set ID": ["Dimension Set ID"],
+    "Item Category Code": ["Item Category Code"],
+    "Transfer-To Bin Code": ["Transfer-To Bin Code", "Transfer To Bin Code"],
+    "Custom Duty Amount": ["Custom Duty Amount"],
+    "Amount": ["Amount"],
+    "GST Credit": ["GST Credit"],
+    "GST Group Code": ["GST Group Code"],
+    "HSN/SAC Code": ["HSN/SAC Code", "HSN Code", "SAC Code"],
+    "Exempted": ["Exempted", "Exempt"],
+    "GST Assessable Value": ["GST Assessable Value"],
+    "Unit Price": ["Unit Price"],
+    "Shop Name": ["Party Name", "Shop Name", "Customer Name", "Store Name", "Outlet Name"]
 }
-# Placeholder values people type in the PO column when there is no real PO.
-# Such rows can't be fetched by PO number (they can still be fetched by Order Id).
+
 INWARD_IGNORE_PO = {"TESTERS", "TESTER", "NA", "N/A", "NIL", "NONE", "-", "0"}
 _inward_cache = {"ts": 0.0, "df": None, "key": "", "source": "", "mode": "sku"}
 
@@ -758,7 +905,6 @@ def _blank(v):
 
 
 def _txt(v):
-    """Cell -> clean display text (12.0 -> '12', Timestamp -> '03-Mar-2026')."""
     if _blank(v): return ""
     if isinstance(v, (pd.Timestamp, datetime)): return v.strftime("%d-%b-%Y")
     if isinstance(v, float) and v.is_integer(): return str(int(v))
@@ -766,81 +912,59 @@ def _txt(v):
 
 
 def _po_key(v):
-    """Comparable invoice/PO id.
-
-    Handles Excel numeric values plus common user-entered prefixes such as
-    ``PO `` / ``PO:``.  This means ``PO PSI/09/26/00061`` matches a SharePoint
-    Excel cell containing ``PSI/09/26/00061`` (and vice versa).
-    """
     s = _txt(v).strip().upper()
-    # Remove common labels users may type before the actual document number.
     s = re.sub(r"^(?:PO|P\.O\.|INVOICE|INV)\s*[:#-]?\s*", "", s)
     s = re.sub(r"\s+", "", s)
     return s.split(".")[0] if re.fullmatch(r"\d+\.0+", s) else s
 
 
 def _qty(v):
-    f = float(v)
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return 0
     return int(f) if f.is_integer() else round(f, 3)
 
 
 def normalize_sheet_url(url):
-    """Turn a normal 'share' link into a direct-download link.
-
-    Google Sheets / Drive links are converted here; OneDrive / SharePoint / direct
-    .xlsx links are passed through unchanged.
-    """
-    u = (url or "").strip()
-    p = urlparse(u); host = p.netloc.lower()
+    u = (url or "").strip(); p = urlparse(u); host = p.netloc.lower()
     if host == "docs.google.com" and "/spreadsheets/" in p.path:
-        if "/spreadsheets/d/e/" in p.path:           # "Publish to web" link
-            q = parse_qs(p.query); q.setdefault("output", ["xlsx"])
-            return urlunparse((p.scheme, p.netloc, re.sub(r"/pub(html)?/?$", "/pub", p.path), "", urlencode(q, doseq=True), ""))
         m = re.search(r"/spreadsheets/d/([A-Za-z0-9_-]+)", p.path)
         if m: return f"https://docs.google.com/spreadsheets/d/{m.group(1)}/export?format=xlsx"
     if host == "drive.google.com":
         m = re.search(r"/file/d/([A-Za-z0-9_-]+)", p.path) or re.search(r"[?&]id=([A-Za-z0-9_-]+)", u)
         if m: return f"https://drive.google.com/uc?export=download&id={m.group(1)}"
-    # SharePoint / OneDrive Excel share links normally open an HTML viewer page.
-    # Adding download=1 makes Microsoft return the actual workbook bytes instead.
     if "sharepoint.com" in host or "onedrive.live.com" in host or "1drv.ms" in host:
-        q = parse_qs(p.query, keep_blank_values=True)
-        q["download"] = ["1"]
+        q = parse_qs(p.query, keep_blank_values=True); q["download"] = ["1"]
         return urlunparse((p.scheme, p.netloc, p.path, p.params, urlencode(q, doseq=True), p.fragment))
     return u
 
 
 def _download_inward(url):
     try:
-        r = requests.get(normalize_sheet_url(url), timeout=60, allow_redirects=True,
-                         headers={"User-Agent": "Mozilla/5.0"})
+        r = requests.get(normalize_sheet_url(url), timeout=60, allow_redirects=True, headers={"User-Agent": "Mozilla/5.0"})
         r.raise_for_status()
     except requests.RequestException as e:
         raise RuntimeError(f"Could not download the inward sheet: {e}")
     data = r.content; ctype = (r.headers.get("content-type") or "").lower(); head = data[:300].lstrip().lower()
     if data[:2] == b"PK": return data, "xlsx"
-    if data[:4] == b"\xd0\xcf\x11\xe0":
-        raise RuntimeError("The inward file is an old .xls workbook. Please save it as .xlsx and link that.")
+    if data[:4] == b"\xd0\xcf\x11\xe0": raise RuntimeError("The inward file is an old .xls workbook. Please save it as .xlsx.")
     if "html" in ctype or head.startswith((b"<!doctype", b"<html")):
-        raise RuntimeError("The inward link did not return the Excel file. The inward source is expected to be a SharePoint/OneDrive Excel workbook (not a Google Sheet). Use the SharePoint/OneDrive share link to the .xlsx file and make sure the file is accessible to the dashboard.")
+        raise RuntimeError("The inward link did not return the Excel file. Use the SharePoint/OneDrive Excel share link with access for the dashboard.")
     return data, "csv"
 
 
 def _find_inward_header(raw):
-    """Find the header row (title rows above it are fine) -> (row index, {field: column position})."""
     for i in range(min(25, len(raw))):
-        heads = ["" if _blank(c) else _hnorm(c) for c in raw.iloc[i].tolist()]
+        heads = [_hnorm(c) for c in raw.iloc[i].tolist()]
         cols = {}
-        for field, aliases in INWARD_ALIASES.items():
-            # Normalize both sheet headers and aliases. This is important for
-            # SharePoint Excel headers such as `InvoiceNumber`, `Invoice Number`,
-            # `Invoice_Number`, etc.
-            normalized_aliases = {_hnorm(a) for a in aliases}
-            for a in normalized_aliases:
-                if a in heads: cols[field] = heads.index(a); break
-        if "po" not in cols and "alt" in cols: cols["po"] = cols.pop("alt")   # sheet only has "Order No"
-        if cols.get("alt") == cols.get("po"): cols.pop("alt", None)
-        if "po" in cols and "qty" in cols: return i, cols
+        for field, aliases in INWARD_FIELD_ALIASES.items():
+            wanted = {_hnorm(a) for a in aliases}
+            for idx, h in enumerate(heads):
+                if h in wanted:
+                    cols[field] = idx; break
+        if "Document No." in cols and "Quantity" in cols:
+            return i, cols
     return None, {}
 
 
@@ -852,108 +976,105 @@ def _parse_inward(data, kind):
         xls = pd.ExcelFile(io.BytesIO(data))
         names = ([INWARD_SHEET] if INWARD_SHEET in xls.sheet_names else []) + [s for s in xls.sheet_names if s != INWARD_SHEET]
         frames = ((s, pd.read_excel(xls, sheet_name=s, header=None, dtype=object)) for s in names)
+
     seen = []
     for sheet, raw in frames:
         i, cols = _find_inward_header(raw)
         if i is None:
-            if len(raw): seen.append(f"{sheet}: " + ", ".join(_txt(c) for c in raw.iloc[0].tolist() if not _blank(c))[:120])
+            if len(raw): seen.append(f"{sheet}: " + " | ".join(_txt(c) for c in raw.iloc[0].tolist() if not _blank(c))[:180])
             continue
+
         body = raw.iloc[i + 1:].reset_index(drop=True)
-        pick = lambda f: body.iloc[:, cols[f]] if f in cols else pd.Series([""] * len(body), dtype=object)
-        mode = "sku" if ("ean" in cols or "name" in cols) else "order"
-        df = pd.DataFrame({"PO": pick("po").map(_txt), "Alt": pick("alt").map(_txt), "Party": pick("party").map(_txt),
-                           "EAN Code": pick("ean").map(_txt), "Product Name": pick("name").map(_txt),
-                           "Order Qty": pd.to_numeric(pick("qty"), errors="coerce").fillna(0),
-                           "Vendor": pick("vendor").map(_txt), "PO Date": pick("date").map(_txt),
-                           "Location": pick("location").map(_txt)})
-        keys = df["PO"].map(_po_key)
-        df["PO Key"] = keys.where(~keys.isin(INWARD_IGNORE_PO), "")
-        df["Alt Key"] = df["Alt"].map(_po_key)
-        if mode == "order":   # no SKU column: each row is one order, identified by its Order Id (or the PO)
-            df["EAN Code"] = df["Alt"].where(df["Alt"] != "", df["PO"])
-            df["Product Name"] = df["Party"]
-        df = df[((df["PO Key"] != "") | (df["Alt Key"] != "")) & ((df["EAN Code"] != "") | (df["Product Name"] != ""))]
-        return df.reset_index(drop=True), (f"Inward sheet - {sheet}" if kind == "xlsx" else "Inward CSV"), mode
-    raise RuntimeError("Could not find the Invoice Number and order-qty columns in the inward file. "
-                       "Expected headers like 'InvoiceNumber' / 'Invoice Number' (or 'PO Number' / 'External Document No.') and 'Order Qty'. "
-                       "First row seen -> " + (" | ".join(seen) or "sheet is empty"))
+        out = pd.DataFrame(index=body.index)
+        for field in INWARD_OUTPUT_HEADERS:
+            if field in cols:
+                out[field] = body.iloc[:, cols[field]].map(_txt)
+            else:
+                out[field] = ""
+
+        # Explicit business mappings requested for the new workbook.
+        # These overwrite the canonical fields if a source alias exists.
+        if "Code of Party" in [_txt(x) for x in raw.iloc[i].tolist()] and "Transfer-to Code" in cols:
+            out["Transfer-to Code"] = out["Transfer-to Code"].map(_txt)
+        out["Document No."] = out["Document No."].map(_txt)
+        out["EAN"] = out["EAN"].map(_txt)
+        out["Description"] = out["Description"].map(_txt)
+        out["Shop Name"] = out["Shop Name"].map(_txt)
+        out["Quantity"] = pd.to_numeric(out["Quantity"], errors="coerce").fillna(0)
+
+        out["__Document Key"] = out["Document No."].map(_po_key)
+        out["__Row"] = range(len(out))
+        out["__Key"] = out.apply(lambda r: f"{r['__Document Key']}|{r['Line No.']}|{r['EAN']}|{r['__Row']}", axis=1)
+        out = out[(out["__Document Key"] != "") & ((out["EAN"] != "") | (out["Description"] != ""))]
+        if out.empty:
+            continue
+        out = out.reset_index(drop=True)
+        return out, (f"Inward sheet - {sheet}" if kind == "xlsx" else "Inward CSV"), "line"
+
+    raise RuntimeError("Could not find the required inward columns. Required: Document No./InvoiceNumber and Quantity/Sales Qty. First row seen -> " + (" | ".join(seen) or "sheet is empty"))
 
 
 def load_inward(force=False):
     key = INWARD_EXCEL_URL or "local"
-    if not force and _inward_cache["df"] is not None and _inward_cache["key"] == key \
-            and time.time() - _inward_cache["ts"] < INWARD_CACHE_SECONDS:
+    if not force and _inward_cache["df"] is not None and _inward_cache["key"] == key and time.time() - _inward_cache["ts"] < INWARD_CACHE_SECONDS:
         return _inward_cache["df"], _inward_cache["source"]
-    if INWARD_EXCEL_URL: data, kind = _download_inward(INWARD_EXCEL_URL)
+    if INWARD_EXCEL_URL:
+        data, kind = _download_inward(INWARD_EXCEL_URL)
     else:
         local = os.path.join(app.root_path, "data", "inward.xlsx")
-        if not os.path.exists(local):
-            raise RuntimeError("Inward Excel link is not configured. Set INWARD_EXCEL_URL on the server.")
+        if not os.path.exists(local): raise RuntimeError("Inward Excel link is not configured. Set INWARD_EXCEL_URL on the server.")
         with open(local, "rb") as f: data, kind = f.read(), "xlsx"
     df, source, mode = _parse_inward(data, kind)
     _inward_cache.update(ts=time.time(), df=df, key=key, source=source, mode=mode)
     return df, source
 
 
-def _inward_match(df, key):
-    if not key: return df.iloc[0:0], "PO"
-    hit = df[df["PO Key"] == key]
-    return (hit, "PO") if not hit.empty else (df[df["Alt Key"] == key], "Alt")
-
-
-def inward_po(text):
-    """Lines for a PO number (or an Order Id), merged per SKU / per order.
-
-    Returns (lines, meta, po_label, source, mode, matched_by)."""
-    key = _po_key(text)
-    df, source = load_inward(False)
-    hit, by = _inward_match(df, key)
-    # Not found in a cached copy? The PO may have just been added, so refresh once.
-    if hit.empty and time.time() - _inward_cache["ts"] > 10:
-        df, source = load_inward(True); hit, by = _inward_match(df, key)
-    mode = _inward_cache["mode"]
-    if hit.empty: return [], {}, "", source, mode, ""
-    agg = {}
-    for _, r in hit.iterrows():
-        k = r["EAN Code"] or r["Product Name"]
-        if k in agg: agg[k]["Order Qty"] += float(r["Order Qty"])
-        else: agg[k] = {"Key": k, "Code": r["EAN Code"], "Name": r["Product Name"] or r["EAN Code"], "Order Qty": float(r["Order Qty"])}
-    lines = [{**v, "Order Qty": _qty(v["Order Qty"])} for v in agg.values()]
-    first = lambda col: next((x for x in hit[col] if x), "")
-    meta = {"vendor": first("Vendor"), "po_date": first("PO Date"), "location": first("Location")}
-    label = first("PO") if by == "PO" else (first("PO") or first("Alt"))
-    return lines, meta, label, source, mode, ("po" if by == "PO" else "order")
+def _mapped_shop_sets(email):
+    mp = load_mapping(False)
+    rows = mp[mp["Email ID"] == email]
+    names = {str(x).strip().casefold() for x in rows["Store Name"].tolist() if str(x).strip()}
+    codes = {str(x).strip().casefold() for x in rows["Store Code"].tolist() if "Store Code" in rows.columns and str(x).strip()}
+    return names, codes
 
 
 def _inward_email_error(email):
     if not email: return "Email ID is required."
-    mp, _ = load_entry_sources(False)
-    return None if (mp["Email ID"] == email).any() else "Email ID is not mapped to any shop."
+    names, codes = _mapped_shop_sets(email)
+    return None if (names or codes) else "Email ID is not mapped to any shop."
 
 
-def save_local_inward(email, po, rows):
-    os.makedirs(os.path.dirname(DATABASE_PATH) or ".", exist_ok=True); ts = datetime.now(timezone.utc).isoformat()
-    with sqlite3.connect(DATABASE_PATH) as con:
-        con.execute("""CREATE TABLE IF NOT EXISTS inward_validations(id INTEGER PRIMARY KEY AUTOINCREMENT, submitted_at TEXT, email TEXT, po_number TEXT, line_code TEXT, line_name TEXT, order_qty REAL, received_qty REAL, variance_qty REAL, status TEXT)""")
-        con.executemany("INSERT INTO inward_validations(submitted_at,email,po_number,line_code,line_name,order_qty,received_qty,variance_qty,status) VALUES(?,?,?,?,?,?,?,?,?)",
-                        [(ts, email, po, r["Code"], r["Name"], r["Order Qty"], r["Received Qty"], r["Variance Qty"], r["Status"]) for r in rows])
-    return len(rows)
+def inward_po(text, email=""):
+    key = _po_key(text)
+    df, source = load_inward(False)
+    hit = df[df["__Document Key"] == key].copy()
+    if email and not hit.empty:
+        names, codes = _mapped_shop_sets(email)
+        if names or codes:
+            shop_ok = hit["Shop Name"].astype(str).str.strip().str.casefold().isin(names)
+            code_ok = hit["Transfer-to Code"].astype(str).str.strip().str.casefold().isin(codes)
+            hit = hit[shop_ok | code_ok]
+    if hit.empty and time.time() - _inward_cache["ts"] > 10:
+        df, source = load_inward(True)
+        hit = df[df["__Document Key"] == key].copy()
+        if email and not hit.empty:
+            names, codes = _mapped_shop_sets(email)
+            hit = hit[hit["Shop Name"].astype(str).str.strip().str.casefold().isin(names) | hit["Transfer-to Code"].astype(str).str.strip().str.casefold().isin(codes)]
+    if hit.empty: return [], {}, "", source, "line", ""
 
+    lines = []
+    for _, r in hit.iterrows():
+        d = {h: _txt(r[h]) for h in INWARD_OUTPUT_HEADERS}
+        qty = _qty(r["Quantity"])
+        d.update({"Key": _txt(r["__Key"]), "Order Qty": qty})
+        lines.append(d)
 
-def save_remote_inward(email, po, rows):
-    """POST to the Apps Script web app (see apps_script.gs, kind='inward')."""
-    body = {"kind": "inward", "email": email, "po_number": po, "rows": rows}
-    if SUBMISSION_API_SECRET: body["secret"] = SUBMISSION_API_SECRET
-    r = requests.post(INWARD_SUBMISSION_API_URL, json=body, timeout=30); r.raise_for_status()
-    res = r.json()
-    if not res.get("ok"): raise RuntimeError(res.get("error") or "Google Apps Script rejected the inward submission.")
-    if int(res.get("saved_rows", 0) or 0) != len(rows):
-        raise RuntimeError(f"Submission mismatch: sent {len(rows)} rows but Apps Script saved {res.get('saved_rows')}.")
-    return len(rows)
+    first = _txt(hit.iloc[0]["Document No."])
+    meta = {"shop_count": int(hit["Shop Name"].replace("", pd.NA).dropna().nunique()), "shops": sorted(set(_txt(x) for x in hit["Shop Name"] if _txt(x)))}
+    return lines, meta, first, source, "line", "document"
 
 
 def _inward_labels(mode):
-    return {"code": "Order ID", "name": "Customer / Store"} if mode == "order" else {"code": "EAN Code", "name": "Product Name"}
+    return {"code": "EAN", "name": "Description"}
 
 
 @app.get("/api/inward/fetch")
@@ -963,10 +1084,9 @@ def inward_fetch():
         err = _inward_email_error(email)
         if err: return jsonify({"ok": False, "error": err}), 403
         if not po: return jsonify({"ok": False, "error": "Enter an Invoice Number."}), 400
-        lines, meta, label, source, mode, by = inward_po(po)
-        if not lines: return jsonify({"ok": False, "error": f"Invoice Number {po} was not found in the inward sheet."}), 404
-        resp = jsonify({"ok": True, "po": label, "matched_by": by, "mode": mode, "labels": _inward_labels(mode),
-                        "meta": meta, "source": source, "rows": lines})
+        lines, meta, label, source, mode, by = inward_po(po, email)
+        if not lines: return jsonify({"ok": False, "error": f"Invoice Number {po} was not found in the inward sheet for your mapped shop(s)."}), 404
+        resp = jsonify({"ok": True, "po": label, "matched_by": by, "mode": mode, "labels": _inward_labels(mode), "meta": meta, "source": source, "headers": INWARD_OUTPUT_HEADERS, "rows": lines})
         resp.headers["Cache-Control"] = "no-store"
         return resp
     except Exception as e: return jsonify({"ok": False, "error": str(e)}), 500
@@ -974,43 +1094,39 @@ def inward_fetch():
 
 @app.post("/api/inward/submit")
 def inward_submit():
-    """Re-reads the PO from the sheet (order qty is never taken from the browser),
-    computes variance, saves it and returns the rows for the CSV report."""
     try:
         p = request.get_json(force=True) or {}
         email = str(p.get("email", "")).strip().lower(); po = str(p.get("po", "")).strip()
         err = _inward_email_error(email)
         if err: return jsonify({"ok": False, "error": err}), 403
-        lines, _, label, _, mode, _ = inward_po(po)
-        if not lines: return jsonify({"ok": False, "error": f"Invoice Number {po} was not found in the inward sheet."}), 404
+        lines, _, label, _, mode, _ = inward_po(po, email)
+        if not lines: return jsonify({"ok": False, "error": f"Invoice Number {po} was not found in the inward sheet for your mapped shop(s)."}), 404
+        by_key = {l["Key"]: l for l in lines}
         got, bad = {}, 0
         for r in p.get("rows", []) or []:
             raw = r.get("Received Qty")
-            if raw is None or (isinstance(raw, str) and not raw.strip()): continue      # left blank
+            if raw is None or (isinstance(raw, str) and not raw.strip()): continue
             try: v = float(raw)
             except (TypeError, ValueError): bad += 1; continue
             if v == v and 0 <= v < float("inf"): got[str(r.get("Key", ""))] = v
             else: bad += 1
-        if bad: return jsonify({"ok": False, "error": f"Received qty is invalid for {bad} line(s). Use whole numbers of 0 or more."}), 400
-        if mode == "sku":      # SKU lists must be complete: a blank could hide a short shipment
-            missing = [l for l in lines if l["Key"] not in got]
-            if missing: return jsonify({"ok": False, "error": f"Received qty is missing for {len(missing)} SKU(s). Enter 0 if nothing was received."}), 400
-            verified = lines
-        else:                  # order lists (e.g. one PO across many stores): verify the lines that were entered
-            verified = [l for l in lines if l["Key"] in got]
-            if not verified: return jsonify({"ok": False, "error": "Enter the received qty for at least one line."}), 400
-        rows = []
-        for l in verified:
-            recv = got[l["Key"]]; var = round(recv - l["Order Qty"], 3)
-            rows.append({"Code": l["Code"], "Name": l["Name"], "Order Qty": l["Order Qty"],
-                         "Received Qty": _qty(recv), "Variance Qty": _qty(var),
-                         "Variance %": round(var / l["Order Qty"] * 100, 1) if l["Order Qty"] else None,
-                         "Status": "Match" if var == 0 else ("Short" if var < 0 else "Excess")})
-        saved = save_remote_inward(email, label, rows) if INWARD_SUBMISSION_API_URL else save_local_inward(email, label, rows)
-        return jsonify({"ok": True, "po": label, "mode": mode, "labels": _inward_labels(mode), "saved_rows": saved, "rows": rows,
-                        "submitted_at": datetime.now(timezone.utc).isoformat()})
-    except Exception as e: return jsonify({"ok": False, "error": str(e)}), 500
+        if bad: return jsonify({"ok": False, "error": f"Received qty is invalid for {bad} line(s). Use 0 or more."}), 400
+        missing = [l for l in lines if l["Key"] not in got]
+        if missing: return jsonify({"ok": False, "error": f"Received qty is missing for {len(missing)} line(s). Enter 0 if nothing was received."}), 400
 
+        rows = []
+        for l in lines:
+            recv = got[l["Key"]]; var = round(recv - float(l["Order Qty"]), 3)
+            row = {h: l.get(h, "") for h in INWARD_OUTPUT_HEADERS}
+            row.update({"Code": l.get("EAN", ""), "Name": l.get("Description", ""), "Order Qty": l["Order Qty"],
+                        "Received Qty": _qty(recv), "Variance Qty": _qty(var),
+                        "Variance %": round(var / float(l["Order Qty"]) * 100, 1) if float(l["Order Qty"]) else None,
+                        "Status": "Match" if var == 0 else ("Short" if var < 0 else "Excess")})
+            rows.append(row)
+
+        saved = save_remote_inward(email, label, rows) if INWARD_SUBMISSION_API_URL else save_local_inward(email, label, rows)
+        return jsonify({"ok": True, "po": label, "mode": mode, "labels": _inward_labels(mode), "headers": INWARD_OUTPUT_HEADERS, "saved_rows": saved, "rows": rows, "submitted_at": datetime.now(timezone.utc).isoformat()})
+    except Exception as e: return jsonify({"ok": False, "error": str(e)}), 500
 
 @app.get("/api/submissions")
 def submissions():

@@ -58,12 +58,12 @@
     try {
       const j = await getJson(`/api/inward/fetch?email=${encodeURIComponent(email)}&po=${encodeURIComponent(q)}&_ts=${Date.now()}`);
       po = {
-        query: q, label: j.po, email, meta: j.meta || {}, mode: j.mode || 'sku', labels: j.labels || { code: 'EAN Code', name: 'Product Name' },
-        lines: j.rows.map(r => ({ key: r['Key'], ean: r['Code'], name: r['Name'], order: Number(r['Order Qty']) || 0, received: null }))
+        query: q, label: j.po, email, meta: j.meta || {}, mode: j.mode || 'line', headers: j.headers || [], labels: j.labels || { code: 'EAN', name: 'Description' },
+        lines: j.rows.map(r => ({ key: r['Key'], ean: r['EAN'], name: r['Description'], order: Number(r['Quantity']) || 0, received: null, details: r }))
       };
       render();
       const n = po.lines.length, unit = po.mode === 'order' ? 'order line' : 'SKU';
-      msg(`PO ${j.po} loaded — ${n.toLocaleString('en-IN')} ${unit}${n === 1 ? '' : 's'}${j.matched_by === 'order' ? ' (matched by Order ID)' : ''}. ` +
+      msg(`Invoice ${j.po} loaded — ${n.toLocaleString('en-IN')} line${n === 1 ? '' : 's'}. ` +
           (po.mode === 'order' && n > 1 ? 'Enter the received qty only for the order line(s) you received.' : 'Enter the received qty.'), true);
     } catch (e) {
       po = null; $('inResult').classList.add('hidden'); $('inResult').innerHTML = '';
@@ -73,21 +73,26 @@
 
   /* ------------------------------------------------------------------- render */
   function render() {
-    const m = po.meta || {}, isOrder = po.mode === 'order';
-    const chips = [m.vendor && `Vendor: ${m.vendor}`, m.po_date && `PO Date: ${m.po_date}`, m.location && `Location: ${m.location}`].filter(Boolean).map(esc).join(' &nbsp;•&nbsp; ');
+    const m = po.meta || {};
+    const headers = po.headers || [];
+    const chips = [m.shops && m.shops.length ? `Shops: ${m.shops.join(', ')}` : ''].filter(Boolean).map(esc).join(' &nbsp;•&nbsp; ');
     $('inResult').classList.remove('hidden');
     $('inResult').innerHTML = `
       <div class="inward-po-head"><b>Invoice ${esc(po.label)}</b>${chips ? `<div class="muted">${chips}</div>` : ''}</div>
       <div class="entry-summary inward-summary">
-        <div class="entry-stat"><span>${isOrder ? 'Lines' : 'SKUs'} Entered</span><strong id="inStatSku">0</strong><small id="inStatSkuSub"></small></div>
-        <div class="entry-stat"><span>Order Qty</span><strong id="inStatOrder">0</strong><small>Total on this PO</small></div>
+        <div class="entry-stat"><span>Lines Entered</span><strong id="inStatSku">0</strong><small id="inStatSkuSub"></small></div>
+        <div class="entry-stat"><span>Sales Qty</span><strong id="inStatOrder">0</strong><small>Total Quantity on this Invoice</small></div>
         <div class="entry-stat"><span>Received Qty</span><strong id="inStatRecv">0</strong><small>Entered so far</small></div>
-        <div class="entry-stat"><span>Net Variance</span><strong id="inStatVar">0</strong><small>Received − Order (entered lines)</small></div>
+        <div class="entry-stat"><span>Net Variance</span><strong id="inStatVar">0</strong><small>Received − Sales Qty</small></div>
       </div>
       <div class="entry-submit-bar"><div><b>Ready to submit?</b><span class="muted" id="inProgress"></span></div><button id="inSubmit" class="btn" type="button">Submit &amp; Download Variance CSV</button></div>
-      <div class="inward-tools"><input id="inSearch" class="inward-search" placeholder="Search ${isOrder ? 'order ID / customer' : 'EAN / SKU / product'}…" autocomplete="off"><span class="muted">Variance = Received − Order · negative = short, positive = excess</span></div>
-      <div class="inward-table-wrap"><table class="inward-table"><thead><tr><th>#</th><th>${esc(isOrder ? po.labels.code : 'EAN / SKU')}</th><th class="name">${esc(isOrder ? po.labels.name : 'Product')}</th><th>Order Qty</th><th>Received Qty</th><th>Variance</th><th>Status</th></tr></thead><tbody>
-      ${po.lines.map((l, i) => `<tr data-i="${i}" data-s="${esc((l.ean + ' ' + l.name).toLowerCase())}"><td>${i + 1}</td><td>${esc(l.ean)}</td><td class="name">${esc(l.name)}</td><td>${fmt(l.order)}</td><td><input class="inward-num" data-i="${i}" type="number" inputmode="numeric" min="0" step="1" placeholder="Enter qty"></td><td id="inVar-${i}">–</td><td id="inSt-${i}"><span class="in-pill pending">Pending</span></td></tr>`).join('')}
+      <div class="inward-tools"><input id="inSearch" class="inward-search" placeholder="Search any invoice field…" autocomplete="off"><span class="muted">Variance = Received − Sales Qty · negative = short, positive = excess</span></div>
+      <div class="inward-table-wrap"><table class="inward-table"><thead><tr><th>#</th>${headers.map(h => `<th class="${h === 'Description' || h === 'Shop Name' ? 'name' : ''}">${esc(h)}</th>`).join('')}<th>Received Qty</th><th>Variance</th><th>Status</th></tr></thead><tbody>
+      ${po.lines.map((l, i) => {
+        const d = l.details || {};
+        const search = headers.map(h => d[h] ?? '').join(' ');
+        return `<tr data-i="${i}" data-s="${esc(search.toLowerCase())}"><td>${i + 1}</td>${headers.map(h => `<td class="${h === 'Description' || h === 'Shop Name' ? 'name' : ''}">${esc(d[h] ?? '')}</td>`).join('')}<td><input class="inward-num" data-i="${i}" type="number" inputmode="numeric" min="0" step="1" placeholder="Enter qty"></td><td id="inVar-${i}">–</td><td id="inSt-${i}"><span class="in-pill pending">Pending</span></td></tr>`;
+      }).join('')}
       </tbody></table></div>`;
 
     document.querySelectorAll('.inward-num').forEach(x => {
@@ -123,11 +128,11 @@
     const recv = po.lines.reduce((a, l) => a + (l.received ?? 0), 0);
     const net = r3(po.lines.reduce((a, l) => a + (l.received === null ? 0 : l.received - l.order), 0));
     $('inStatSku').textContent = `${fmt(ent)} / ${fmt(n)}`;
-    $('inStatSkuSub').textContent = ent === n ? 'All lines entered' : (po.mode === 'order' ? `${fmt(n - ent)} not entered (skipped)` : `${fmt(n - ent)} still to enter`);
+    $('inStatSkuSub').textContent = ent === n ? 'All lines entered' : (`${fmt(n - ent)} still to enter`);
     $('inStatOrder').textContent = fmt(order);
     $('inStatRecv').textContent = fmt(recv);
     $('inStatVar').textContent = (net > 0 ? '+' : '') + fmt(net);
-    $('inProgress').textContent = ` ${fmt(ent)} of ${fmt(n)} ${po.mode === 'order' ? 'line' : 'SKU'}(s) entered`;
+    $('inProgress').textContent = ` ${fmt(ent)} of ${fmt(n)} ${'line'}(s) entered`;
   }
 
   function applySearch() {
@@ -145,16 +150,13 @@
   async function submit() {
     if (!po) return;
     const missing = po.lines.map((l, i) => l.received === null ? i : -1).filter(i => i >= 0);
-    if (po.mode === 'order' && missing.length === po.lines.length) {
-      warnedMissing = true; msg('Enter the received qty for at least one order line.'); const f = document.querySelector('.inward-num'); if (f) f.focus(); return;
-    }
-    if (po.mode !== 'order' && missing.length) {
+    if (missing.length) {
       $('inSearch').value = ''; applySearch();
       missing.forEach(i => document.querySelector(`.inward-num[data-i="${i}"]`).classList.add('bad'));
       const first = document.querySelector(`.inward-num[data-i="${missing[0]}"]`);
       first.scrollIntoView({ block: 'center', behavior: 'smooth' }); first.focus();
       warnedMissing = true;
-      msg(`${missing.length} SKU(s) still have no received qty. Enter 0 if nothing was received for that SKU.`);
+      msg(`${missing.length} line(s) still have no received qty. Enter 0 if nothing was received.`);
       return;
     }
     warnedMissing = false;
@@ -165,7 +167,7 @@
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: po.email, po: po.query, rows: po.lines.map(l => ({ 'Key': l.key, 'Received Qty': l.received })) })
       });
-      lastReport = { po: j.po, email: po.email, at: new Date(j.submitted_at), rows: j.rows, labels: j.labels };
+      lastReport = { po: j.po, email: po.email, at: new Date(j.submitted_at), rows: j.rows, labels: j.labels, headers: j.headers || po.headers || [] };
       downloadCsv();
       const c = s => j.rows.filter(r => r['Status'] === s).length;
       const net = r3(j.rows.reduce((a, r) => a + r['Variance Qty'], 0));
@@ -192,10 +194,11 @@
     const p = n => String(n).padStart(2, '0');
     const stamp = `${at.getFullYear()}-${p(at.getMonth() + 1)}-${p(at.getDate())} ${p(at.getHours())}:${p(at.getMinutes())}`;
     const sorted = [...rows].sort((a, b) => (a['Status'] === 'Match') - (b['Status'] === 'Match') || Math.abs(b['Variance Qty']) - Math.abs(a['Variance Qty']));
-    const head = ['Invoice Number', lastReport.labels.code, lastReport.labels.name, 'Order Qty', 'Received Qty', 'Variance Qty', 'Variance %', 'Status', 'Received By', 'Submitted At'];
-    const lines = [head.join(',')].concat(sorted.map(r => [
-      csvCell(label, true), csvCell(r['Code'], true), csvCell(r['Name'], true), r['Order Qty'], r['Received Qty'], r['Variance Qty'],
-      r['Variance %'] === null ? '' : r['Variance %'], r['Status'], csvCell(email, true), stamp
+    const baseHeaders = lastReport.headers || [];
+    const head = [...baseHeaders, 'Received Qty', 'Variance Qty', 'Variance %', 'Status', 'Received By', 'Submitted At'];
+    const lines = [head.map(x => csvCell(x, true)).join(',')].concat(sorted.map(r => [
+      ...baseHeaders.map(h => csvCell(r[h], true)),
+      r['Received Qty'], r['Variance Qty'], r['Variance %'] === null ? '' : r['Variance %'], r['Status'], csvCell(email, true), stamp
     ].join(',')));
     const blob = new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
     const a = document.createElement('a');
