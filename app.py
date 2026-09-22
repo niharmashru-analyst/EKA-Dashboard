@@ -1187,7 +1187,12 @@ def inward_fetch():
         if not po: return jsonify({"ok": False, "error": "Enter an Invoice Number."}), 400
         lines, meta, label, source, mode, by = inward_po(po, email)
         if not lines: return jsonify({"ok": False, "error": f"Invoice Number {po} was not found in the inward sheet for your mapped shop(s)."}), 404
-        resp = jsonify({"ok": True, "po": label, "matched_by": by, "mode": mode, "labels": _inward_labels(mode), "meta": meta, "source": source, "headers": INWARD_OUTPUT_HEADERS, "rows": lines})
+        try:
+            master = load_master(False)
+            master_skus = master[["EAN Code", "Product Name"]].to_dict(orient="records") if not master.empty else []
+        except Exception:
+            master_skus = []
+        resp = jsonify({"ok": True, "po": label, "matched_by": by, "mode": mode, "labels": _inward_labels(mode), "meta": meta, "source": source, "headers": INWARD_OUTPUT_HEADERS, "rows": lines, "master_skus": master_skus})
         resp.headers["Cache-Control"] = "no-store"
         return resp
     except Exception as e: return jsonify({"ok": False, "error": str(e)}), 500
@@ -1204,19 +1209,42 @@ def inward_submit():
         if not lines: return jsonify({"ok": False, "error": f"Invoice Number {po} was not found in the inward sheet for your mapped shop(s)."}), 404
         by_key = {l["Key"]: l for l in lines}
         got, bad = {}, 0
+        submitted_added = []
         for r in p.get("rows", []) or []:
+            key = str(r.get("Key", ""))
             raw = r.get("Received Qty")
             if raw is None or (isinstance(raw, str) and not raw.strip()): continue
             try: v = float(raw)
             except (TypeError, ValueError): bad += 1; continue
-            if v == v and 0 <= v < float("inf"): got[str(r.get("Key", ""))] = v
-            else: bad += 1
+            if not (v == v and 0 <= v < float("inf")):
+                bad += 1
+                continue
+            got[key] = v
+            # Added SKU rows are explicitly marked by the UI and have Order Qty = 0.
+            if key.startswith("__ADDED__|") and key not in by_key:
+                ean = str(r.get("EAN", "")).strip()
+                name = str(r.get("Description", "")).strip()
+                if not ean: return jsonify({"ok": False, "error": "Added SKU is missing its EAN."}), 400
+                try:
+                    master = load_master(False)
+                    mm = master[master["EAN Code"].astype(str).str.strip() == ean]
+                except Exception:
+                    mm = pd.DataFrame()
+                if mm.empty:
+                    return jsonify({"ok": False, "error": f"SKU {ean} is not available in SKU Master."}), 400
+                if not name: name = str(mm.iloc[0]["Product Name"])
+                added = {h: "" for h in INWARD_OUTPUT_HEADERS}
+                added.update({"Key": key, "EAN": ean, "Description": name, "Quantity": 0, "Order Qty": 0})
+                by_key[key] = added
+                submitted_added.append(key)
         if bad: return jsonify({"ok": False, "error": f"Received qty is invalid for {bad} line(s). Use 0 or more."}), 400
         missing = [l for l in lines if l["Key"] not in got]
+        missing += [by_key[k] for k in submitted_added if k not in got]
         if missing: return jsonify({"ok": False, "error": f"Received qty is missing for {len(missing)} line(s). Enter 0 if nothing was received."}), 400
 
         rows = []
-        for l in lines:
+        all_lines = lines + [by_key[k] for k in submitted_added]
+        for l in all_lines:
             recv = got[l["Key"]]; var = round(recv - float(l["Order Qty"]), 3)
             row = {h: l.get(h, "") for h in INWARD_OUTPUT_HEADERS}
             row.update({"Code": l.get("EAN", ""), "Name": l.get("Description", ""), "Order Qty": l["Order Qty"],

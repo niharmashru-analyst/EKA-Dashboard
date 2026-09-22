@@ -41,6 +41,7 @@
   let po = null;          // { query, label, email, lines:[{key, ean, name, order, received|null}] }
   let warnedMissing = false;  // true while the 'no received qty' banner is showing
   let lastReport = null;  // data behind the CSV, kept so it can be downloaded again from the popup
+  let master = [];       // SKU master returned with the invoice fetch, used for Add SKU
 
   const entered = () => po ? po.lines.filter(l => l.received !== null).length : 0;
   const statusOf = v => v === null ? 'pending' : (v === 0 ? 'match' : (v < 0 ? 'short' : 'excess'));
@@ -59,8 +60,10 @@
       const j = await getJson(`/api/inward/fetch?email=${encodeURIComponent(email)}&po=${encodeURIComponent(q)}&_ts=${Date.now()}`);
       po = {
         query: q, label: j.po, email, meta: j.meta || {}, mode: j.mode || 'line', headers: j.headers || [], labels: j.labels || { code: 'EAN', name: 'Description' },
-        lines: j.rows.map(r => ({ key: r['Key'], ean: r['EAN'], name: r['Description'], order: Number(r['Quantity']) || 0, received: null, details: r }))
+        master: j.master_skus || [],
+        lines: j.rows.map(r => ({ key: r['Key'], ean: r['EAN'], name: r['Description'], order: Number(r['Quantity']) || 0, received: null, details: r, added: false }))
       };
+      master = po.master || [];
       render();
       const n = po.lines.length, unit = po.mode === 'order' ? 'order line' : 'SKU';
       msg(`Invoice ${j.po} loaded — ${n.toLocaleString('en-IN')} line${n === 1 ? '' : 's'}. ` +
@@ -146,14 +149,21 @@
             <option value="match">Match</option>
             <option value="pending">Pending</option>
           </select>
+          <button id="inAddSku" class="btn secondary inward-add-sku" type="button">+ Add SKU</button>
         </div>
         <span class="muted">Variance = Received − Sales Qty · negative = short, positive = excess</span>
+      </div>
+      <div class="master-picker hidden" id="inMasterPicker">
+        <div class="master-picker-head"><b>Add SKU From Master</b><button id="inCloseMaster" class="picker-close" type="button">✕</button></div>
+        <input id="inMasterSearch" class="master-search" placeholder="Search EAN / SKU / Product name…" autocomplete="off">
+        <div id="inMasterResults" class="master-results"></div>
       </div>
       <div class="inward-table-wrap"><table class="inward-table"><thead><tr><th>#</th><th>EAN</th><th class="name">Description</th><th>Sales Qty</th><th>Received Qty</th><th>Variance</th><th>Status</th></tr></thead><tbody>
       ${po.lines.map((l, i) => {
         const d = l.details || {};
         const search = [d['EAN'], d['Description'], d['Quantity']].join(' ');
-        return `<tr data-i="${i}" data-s="${esc(search.toLowerCase())}"><td>${i + 1}</td><td>${esc(d['EAN'] ?? '')}</td><td class="name">${esc(d['Description'] ?? '')}</td><td>${esc(d['Quantity'] ?? '')}</td><td><input class="inward-num" data-i="${i}" type="number" inputmode="numeric" min="0" step="1" placeholder="Enter qty"></td><td id="inVar-${i}">–</td><td id="inSt-${i}"><span class="in-pill pending">Pending</span></td></tr>`;
+        const addedBadge = l.added ? ' <span class="in-added-badge">Added SKU</span>' : '';
+        return `<tr data-i="${i}" data-s="${esc(search.toLowerCase())}"><td>${i + 1}</td><td>${esc(d['EAN'] ?? '')}</td><td class="name">${esc(d['Description'] ?? '')}${addedBadge}</td><td>${esc(d['Quantity'] ?? '')}</td><td><input class="inward-num" data-i="${i}" type="number" inputmode="numeric" min="0" step="1" placeholder="Enter qty"></td><td id="inVar-${i}">–</td><td id="inSt-${i}"><span class="in-pill pending">Pending</span></td></tr>`;
       }).join('')}
       </tbody></table></div>`;
 
@@ -164,7 +174,50 @@
     $('inSearch').oninput = applyFilters;
     $('inStatusFilter').onchange = applyFilters;
     $('inSubmit').onclick = submit;
+    $('inAddSku').onclick = openMasterPicker;
+    $('inCloseMaster').onclick = closeMasterPicker;
+    $('inMasterSearch').oninput = renderMasterResults;
+    renderMasterResults();
     paintSummary();
+  }
+
+  function openMasterPicker() {
+    $('inMasterPicker').classList.remove('hidden');
+    $('inMasterSearch').value = '';
+    renderMasterResults();
+    $('inMasterSearch').focus();
+  }
+
+  function closeMasterPicker() { $('inMasterPicker').classList.add('hidden'); }
+
+  function renderMasterResults() {
+    const q = ($('inMasterSearch')?.value || '').trim().toLowerCase();
+    const existing = new Set((po?.lines || []).map(l => String(l.ean).trim().toLowerCase()));
+    const options = (master || []).filter(m => {
+      const ean = String(m['EAN Code'] ?? '').trim();
+      const name = String(m['Product Name'] ?? '');
+      return ean && !existing.has(ean.toLowerCase()) && (!q || ean.toLowerCase().includes(q) || name.toLowerCase().includes(q));
+    });
+    const box = $('inMasterResults');
+    if (!box) return;
+    if (!options.length) { box.innerHTML = '<div class="master-empty">No new SKU found in SKU Master.</div>'; return; }
+    box.innerHTML = options.slice(0, 100).map(m => `<button class="master-option" data-ean="${esc(m['EAN Code'])}" type="button"><span><b>${esc(m['EAN Code'])}</b><small>${esc(m['Product Name'])}</small></span><span>＋</span></button>`).join('');
+    box.querySelectorAll('.master-option').forEach(b => b.onclick = () => addMasterSku(b.dataset.ean));
+  }
+
+  function addMasterSku(ean) {
+    const found = (master || []).find(m => String(m['EAN Code']).trim() === String(ean).trim());
+    if (!found || !po) return;
+    if (po.lines.some(l => String(l.ean).trim() === String(ean).trim())) { msg('SKU is already in the validation table.'); return; }
+    const e = String(found['EAN Code']).trim();
+    const name = String(found['Product Name'] || '').trim();
+    po.lines.push({
+      key: `__ADDED__|${e}`, ean: e, name, order: 0, received: null, added: true,
+      details: { EAN: e, Description: name, Quantity: 0, Key: `__ADDED__|${e}`, 'Order Qty': 0 }
+    });
+    closeMasterPicker();
+    render();
+    msg(`${name} added from SKU Master. Sales Qty is 0, so any received quantity will appear as Excess.`, true);
   }
 
   function onQty(x) {
@@ -239,7 +292,7 @@
     try {
       const j = await getJson('/api/inward/submit', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: po.email, po: po.query, rows: po.lines.map(l => ({ 'Key': l.key, 'Received Qty': l.received })) })
+        body: JSON.stringify({ email: po.email, po: po.query, rows: po.lines.map(l => ({ 'Key': l.key, 'EAN': l.ean, 'Description': l.name, 'Received Qty': l.received })) })
       });
       lastReport = { po: j.po, email: po.email, at: new Date(j.submitted_at), rows: j.rows, labels: j.labels, headers: j.headers || po.headers || [] };
       downloadCsv();
