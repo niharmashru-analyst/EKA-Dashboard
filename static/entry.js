@@ -7,6 +7,29 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt
 let entryStep=1;
 function showSetup(){entryStep=1;$('skuArea').classList.add('hidden');$('setupActions').style.display='flex';$('email').disabled=false;$('store').disabled=stores.length<=1;$('continueEntry').disabled=!email||!selectedStore;}
 
+let entryLoadTimer = null;
+function setEntryLoading(show, title='Loading SKU Entry', text='Preparing your shop data…') {
+  const el = $('entryLoading'); if (!el) return;
+  const bar = $('entryProgressBar'), pct = $('entryProgressPct');
+  $('entryLoadingTitle').textContent = title; $('entryLoadingText').textContent = text;
+  el.classList.toggle('open', show); el.setAttribute('aria-hidden', show ? 'false' : 'true');
+  if (show) {
+    let n=8; bar.style.width=n+'%'; pct.textContent=n+'%'; clearInterval(entryLoadTimer);
+    entryLoadTimer=setInterval(()=>{ n=Math.min(92,n+Math.max(1,Math.round((92-n)*.10))); bar.style.width=n+'%'; pct.textContent=n+'%'; $('entryLoadingText').textContent=n<45?'Loading store stock data…':n<75?'Preparing SKU list…':'Almost ready…'; },350);
+  } else { clearInterval(entryLoadTimer); bar.style.width='100%'; pct.textContent='100%'; }
+}
+
+async function syncData() {
+  const button=$('syncData'), oldText=button?button.textContent:''; const currentEmail=$('email').value.trim().toLowerCase();
+  if(button){button.disabled=true;button.textContent='↻ Syncing…';} msg('Refreshing the latest data…',true);
+  try {
+    const j=await getJson('/api/data/sync',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:currentEmail})});
+    if(currentEmail) await loadMeta();
+    msg(`Data synced successfully. ${Number(j.mapping_rows||0).toLocaleString('en-IN')} mapping row(s) refreshed.`,true);
+  } catch(e){ msg(`Data sync failed: ${e.message}`); }
+  finally { if(button){button.disabled=false;button.textContent=oldText||'↻ Sync Data';} }
+}
+
 function showPopup(title, text, good = true, showDownload = false) {
   let el = $('entryPopup');
   if (!el) {
@@ -97,21 +120,18 @@ async function loadMeta() {
 }
 
 async function loadSku() {
-  selectedStore = $('store').value || selectedStore;
-  if (!selectedStore) return;
+  selectedStore=$('store').value||selectedStore; if(!selectedStore) return;
+  const button=$('continueEntry'); if(button){button.disabled=true;button.textContent='Loading…';}
+  setEntryLoading(true,'Loading SKU Entry',`Preparing ${selectedStore}…`);
   try {
-    const j = await getJson('/api/entry-meta?email=' + encodeURIComponent(email) + '&store=' + encodeURIComponent(selectedStore) + '&_ts=' + Date.now());
-    master = j.master_skus || master;
-    const available = j.available_skus || [];
-    rows = available.map(x => ({ ean: String(x['EAN Code'] ?? '').trim(), name: String(x['Product Name'] ?? ''), stock: 0, tester: 0 }));
-    currentPage = 1;
-    entryStep=2;
-    $('setupActions').style.display='none';
-    $('email').disabled=true;
-    $('store').disabled=true;
-    render();
-    msg(`${rows.length.toLocaleString('en-IN')} SKU(s) loaded for ${selectedStore}.`, true);
-  } catch (e) { msg(e.message); }
+    const j=await getJson('/api/entry-meta?email='+encodeURIComponent(email)+'&store='+encodeURIComponent(selectedStore)+'&_ts='+Date.now());
+    master=j.master_skus||master; const available=j.available_skus||[];
+    rows=available.map(x=>({ean:String(x['EAN Code']??'').trim(),name:String(x['Product Name']??''),stock:0,tester:0})); currentPage=1; entryStep=2;
+    $('setupActions').style.display='none'; $('email').disabled=true; $('store').disabled=true;
+    setEntryLoading(true,'Loading SKU Entry',`${rows.length.toLocaleString('en-IN')} SKU(s) found. Building the entry table…`);
+    render(); msg(`${rows.length.toLocaleString('en-IN')} SKU(s) loaded for ${selectedStore}.`,true);
+  } catch(e){ msg(e.message); }
+  finally { setEntryLoading(false); if(button){button.disabled=!selectedStore;button.textContent='Continue to SKU Entry →';} }
 }
 
 function render() {
@@ -374,6 +394,7 @@ $('email').addEventListener('blur', loadMeta);
 $('email').addEventListener('keydown', e => { if (e.key === 'Enter') loadMeta(); });
 $('store').onchange = () => { selectedStore=$('store').value||''; $('continueEntry').disabled=!selectedStore; };
 $('continueEntry').onclick = loadSku;
+$('syncData').onclick = syncData;
 
 updateSummary();
 showSetup();

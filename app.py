@@ -423,6 +423,54 @@ def load_local_submissions():
     with sqlite3.connect(DATABASE_PATH) as con: return pd.read_sql_query("SELECT * FROM submissions",con)
 
 
+def inward_db_init():
+    db_init()
+    with sqlite3.connect(DATABASE_PATH) as con:
+        con.execute("""CREATE TABLE IF NOT EXISTS inward_submissions(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, submitted_at TEXT, email TEXT,
+            document_no TEXT, shop_name TEXT, transfer_to_code TEXT, ean TEXT,
+            description TEXT, quantity REAL, received_qty REAL, variance_qty REAL,
+            variance_pct REAL, status TEXT, line_data_json TEXT)""")
+
+def save_local_inward(email, po, rows):
+    inward_db_init(); ts=datetime.now(timezone.utc).isoformat()
+    out=[]
+    for r in rows:
+        out.append((ts, email, str(r.get("Document No.", po) or po), str(r.get("Shop Name", "") or ""),
+                    str(r.get("Transfer-to Code", "") or ""), str(r.get("EAN", "") or ""),
+                    str(r.get("Description", "") or ""), float(r.get("Quantity", 0) or 0),
+                    float(r.get("Received Qty", 0) or 0), float(r.get("Variance Qty", 0) or 0),
+                    None if r.get("Variance %") is None else float(r.get("Variance %")),
+                    str(r.get("Status", "") or ""), json.dumps(r, ensure_ascii=False)))
+    with sqlite3.connect(DATABASE_PATH) as con:
+        con.executemany("""INSERT INTO inward_submissions(
+            submitted_at,email,document_no,shop_name,transfer_to_code,ean,description,quantity,
+            received_qty,variance_qty,variance_pct,status,line_data_json)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""", out)
+    return len(out)
+
+def save_remote_inward(email, po, rows):
+    url = INWARD_SUBMISSION_API_URL
+    if not url:
+        return save_local_inward(email, po, rows)
+    payload = {"kind": "inward", "email": email, "po_number": po, "rows": rows}
+    secret = os.getenv("INWARD_SUBMISSION_API_SECRET", SUBMISSION_API_SECRET).strip()
+    if secret:
+        payload["secret"] = secret
+    r = requests.post(url, json=payload, timeout=45)
+    try:
+        data = r.json()
+    except Exception:
+        data = {}
+    if r.status_code >= 400 or not data.get("ok"):
+        detail = data.get("error") or r.text or f"HTTP {r.status_code}"
+        raise RuntimeError(f"Inward submission service rejected the request: {detail}")
+    saved = int(data.get("saved_rows", len(rows)) or 0)
+    if saved != len(rows):
+        raise RuntimeError(f"Submission mismatch: sent {len(rows)} rows but service saved {saved}.")
+    return saved
+
+
 def remote_request(method, payload=None):
     if not SUBMISSION_API_URL: return None
     payload=payload or {}
@@ -687,6 +735,28 @@ def api_variance():
         resp.headers["Pragma"]="no-cache"
         return resp
     except Exception as e: return jsonify({"ok":False,"error":str(e)}),500
+
+@app.post("/api/data/sync")
+def data_sync():
+    """Force-refresh data sources used by Field Entry and Inward Validation."""
+    try:
+        p = request.get_json(silent=True) or {}
+        email = str(p.get("email", "")).strip().lower()
+        mp = load_mapping(True)
+        if email and email not in set(mp["Email ID"].astype(str).str.lower()):
+            return jsonify({"ok": False, "error": "Email ID is not mapped to any shop."}), 403
+        stock = load_stock(True)
+        master = load_master(True)
+        inward_rows = None
+        inward_error = ""
+        try:
+            inward_df, _ = load_inward(True)
+            inward_rows = int(len(inward_df))
+        except Exception as e:
+            inward_error = str(e)
+        return jsonify({"ok": True, "message": "Data refreshed successfully.", "mapping_rows": int(len(mp)), "stock_rows": int(len(stock)), "master_rows": int(len(master)), "inward_rows": inward_rows, "inward_error": inward_error, "synced_at": datetime.now(timezone.utc).isoformat()})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 @app.get("/api/entry-meta")
 def entry_meta():

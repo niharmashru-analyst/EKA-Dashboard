@@ -71,8 +71,8 @@
     } finally { btn.disabled = false; btn.textContent = 'Fetch'; }
   }
 
-  /* --------------------------------------------------------------- sync Excel */
-  async function syncExcel() {
+  /* --------------------------------------------------------------- sync data */
+  async function syncData() {
     const email = $('inEmail').value.trim().toLowerCase();
     if (!email) { msg('Enter your company email first.'); $('inEmail').focus(); return; }
     if (po && entered() > 0 && !confirm('Syncing will refresh the Excel data and discard the quantities you have already entered if the invoice is reloaded. Continue?')) return;
@@ -82,10 +82,10 @@
     btn.disabled = true;
     fetchBtn.disabled = true;
     btn.textContent = '↻ Syncing…';
-    msg('Refreshing the latest Excel data from SharePoint…');
+    msg('Refreshing the latest dashboard and entry data…');
 
     try {
-      const j = await getJson('/api/inward/sync', {
+      const j = await getJson('/api/data/sync', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email })
@@ -99,17 +99,17 @@
         $('inResult').classList.add('hidden');
         $('inResult').innerHTML = '';
         await fetchPo();
-        msg(`Excel synced successfully. Invoice ${q} was checked again against the latest data.`, true);
+        msg(`Data synced successfully. Invoice ${q} was checked again against the latest data.`, true);
       } else {
-        const rows = Number(j.rows || 0).toLocaleString('en-IN');
-        msg(`Excel synced successfully — ${rows} source row(s) refreshed. You can now fetch the Invoice Number.`, true);
+        const rows = Number(j.inward_rows || 0).toLocaleString('en-IN');
+        msg(`Data synced successfully — ${rows} source row(s) refreshed. You can now fetch the Invoice Number.`, true);
       }
     } catch (e) {
-      msg(`Excel sync failed: ${e.message}`);
+      msg(`Data sync failed: ${e.message}`);
     } finally {
       btn.disabled = false;
       fetchBtn.disabled = false;
-      btn.textContent = '↻ Sync Excel';
+      btn.textContent = '↻ Sync Data';
     }
   }
 
@@ -135,7 +135,20 @@
         <div class="entry-stat"><span>Net Variance</span><strong id="inStatVar">0</strong><small>Received − Sales Qty</small></div>
       </div>
       <div class="entry-submit-bar"><div><b>Ready to submit?</b><span class="muted" id="inProgress"></span></div><button id="inSubmit" class="btn" type="button">Submit &amp; Download Variance CSV</button></div>
-      <div class="inward-tools"><input id="inSearch" class="inward-search" placeholder="Search EAN / Description / Quantity…" autocomplete="off"><span class="muted">Variance = Received − Sales Qty · negative = short, positive = excess</span></div>
+      <div class="inward-tools">
+        <div class="inward-filter-group">
+          <input id="inSearch" class="inward-search" placeholder="Search EAN / Description / Quantity…" autocomplete="off">
+          <select id="inStatusFilter" class="inward-status-filter" aria-label="Filter by status">
+            <option value="all">All Status</option>
+            <option value="issues">Issues Only (Short + Excess)</option>
+            <option value="short">Short</option>
+            <option value="excess">Excess</option>
+            <option value="match">Match</option>
+            <option value="pending">Pending</option>
+          </select>
+        </div>
+        <span class="muted">Variance = Received − Sales Qty · negative = short, positive = excess</span>
+      </div>
       <div class="inward-table-wrap"><table class="inward-table"><thead><tr><th>#</th><th>EAN</th><th class="name">Description</th><th>Sales Qty</th><th>Received Qty</th><th>Variance</th><th>Status</th></tr></thead><tbody>
       ${po.lines.map((l, i) => {
         const d = l.details || {};
@@ -148,7 +161,8 @@
       x.oninput = () => onQty(x);
       x.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); focusNext(x); } };
     });
-    $('inSearch').oninput = applySearch;
+    $('inSearch').oninput = applyFilters;
+    $('inStatusFilter').onchange = applyFilters;
     $('inSubmit').onclick = submit;
     paintSummary();
   }
@@ -158,7 +172,7 @@
     const ok = raw !== '' && isFinite(n) && n >= 0;
     l.received = ok ? n : null;
     x.classList.toggle('bad', raw !== '' && !ok);
-    paintRow(+x.dataset.i); paintSummary();
+    paintRow(+x.dataset.i); paintSummary(); applyFilters();
     if (warnedMissing && (po.mode === 'order' ? entered() > 0 : entered() === po.lines.length)) { warnedMissing = false; msg(''); }
   }
 
@@ -184,10 +198,21 @@
     $('inProgress').textContent = ` ${fmt(ent)} of ${fmt(n)} ${'line'}(s) entered`;
   }
 
-  function applySearch() {
+  function applyFilters() {
     const q = $('inSearch').value.trim().toLowerCase();
-    document.querySelectorAll('.inward-table tbody tr').forEach(tr => { tr.style.display = !q || tr.dataset.s.includes(q) ? '' : 'none'; });
+    const status = $('inStatusFilter') ? $('inStatusFilter').value : 'all';
+    document.querySelectorAll('.inward-table tbody tr').forEach(tr => {
+      const i = Number(tr.dataset.i);
+      const l = po && po.lines[i];
+      const current = l ? statusOf(l.received === null ? null : r3(l.received - l.order)) : 'pending';
+      const statusOk = status === 'all' || (status === 'issues' ? (current === 'short' || current === 'excess') : current === status);
+      const searchOk = !q || tr.dataset.s.includes(q);
+      tr.style.display = statusOk && searchOk ? '' : 'none';
+    });
   }
+
+  // Keep this alias for validation/error flows that intentionally clear the search.
+  function applySearch() { applyFilters(); }
 
   function focusNext(x) {
     const inputs = [...document.querySelectorAll('.inward-num')].filter(i => i.closest('tr').style.display !== 'none');
@@ -279,7 +304,7 @@
 
   /* --------------------------------------------------------------------- init */
   $('inFetch').onclick = fetchPo;
-  $('inSync').onclick = syncExcel;
+  $('inSync').onclick = syncData;
   $('inPo').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); fetchPo(); } });
   $('inEmail').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); $('inPo').focus(); } });
   showPage(location.hash.slice(1));
