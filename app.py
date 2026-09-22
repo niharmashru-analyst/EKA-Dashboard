@@ -828,15 +828,10 @@ INWARD_CACHE_SECONDS = int(os.getenv("INWARD_CACHE_SECONDS", "60"))
 INWARD_SUBMISSION_API_URL = os.getenv("INWARD_SUBMISSION_API_URL", "").strip()
 
 # Exact columns the Entry page / variance CSV exposes.
+# Only these six source columns are exposed by Inward Validation / variance CSV.
+# Party and Transfer-to Code are shown once in the invoice header, not repeated per row.
 INWARD_OUTPUT_HEADERS = [
-    "Document No.", "Line No.", "Item No.", "Quantity", "Unit of Measure", "EAN", "Description",
-    "Shortcut Dimension 1 Code", "Shortcut Dimension 2 Code", "Gen. Prod. Posting Group",
-    "Inventory Posting Group", "Quantity (Base)", "Qty. per Unit of Measure", "Unit of Measure Code",
-    "Gross Weight", "Net Weight", "Unit Volume", "Variant Code", "Units per Parcel", "Description 2",
-    "Transfer Order No.", "Receipt Date", "Shipping Agent Code", "Shipping Agent Service Code",
-    "In-Transit Code", "Transfer-from Code", "Transfer-to Code", "Item Rcpt. Entry No.", "Shipping Time",
-    "Dimension Set ID", "Item Category Code", "Transfer-To Bin Code", "Custom Duty Amount", "Amount",
-    "GST Credit", "GST Group Code", "HSN/SAC Code", "Exempted", "GST Assessable Value", "Unit Price", "Shop Name"
+    "Transfer-to Code", "Shop Name", "Document No.", "EAN", "Description", "Quantity"
 ]
 
 # Source aliases. The six important business mappings are explicit:
@@ -1004,7 +999,7 @@ def _parse_inward(data, kind):
 
         out["__Document Key"] = out["Document No."].map(_po_key)
         out["__Row"] = range(len(out))
-        out["__Key"] = out.apply(lambda r: f"{r['__Document Key']}|{r['Line No.']}|{r['EAN']}|{r['__Row']}", axis=1)
+        out["__Key"] = out.apply(lambda r: f"{r['__Document Key']}|{r['EAN']}|{r['__Row']}", axis=1)
         out = out[(out["__Document Key"] != "") & ((out["EAN"] != "") | (out["Description"] != ""))]
         if out.empty:
             continue
@@ -1069,12 +1064,48 @@ def inward_po(text, email=""):
         lines.append(d)
 
     first = _txt(hit.iloc[0]["Document No."])
-    meta = {"shop_count": int(hit["Shop Name"].replace("", pd.NA).dropna().nunique()), "shops": sorted(set(_txt(x) for x in hit["Shop Name"] if _txt(x)))}
+    shops = sorted(set(_txt(x) for x in hit["Shop Name"] if _txt(x)))
+    codes = sorted(set(_txt(x) for x in hit["Transfer-to Code"] if _txt(x)))
+    documents = sorted(set(_txt(x) for x in hit["Document No."] if _txt(x)))
+    meta = {
+        "shop_count": len(shops),
+        "shops": shops,
+        "transfer_to_codes": codes,
+        "documents": documents,
+    }
     return lines, meta, first, source, "line", "document"
 
 
 def _inward_labels(mode):
     return {"code": "EAN", "name": "Description"}
+
+
+@app.post("/api/inward/sync")
+def inward_sync():
+    """Force-refresh the SharePoint/OneDrive inward Excel cache.
+
+    This is intentionally separate from /api/inward/fetch so users can
+    refresh the source workbook on demand when a newly-created invoice
+    is not yet visible in the cached data.
+    """
+    try:
+        p = request.get_json(silent=True) or {}
+        email = str(p.get("email", "")).strip().lower()
+        err = _inward_email_error(email)
+        if err:
+            return jsonify({"ok": False, "error": err}), 403
+
+        df, source = load_inward(True)
+        synced_at = datetime.now(timezone.utc).isoformat()
+        return jsonify({
+            "ok": True,
+            "source": source,
+            "rows": int(len(df)),
+            "synced_at": synced_at,
+            "message": "Excel data refreshed successfully."
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 @app.get("/api/inward/fetch")

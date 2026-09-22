@@ -162,7 +162,7 @@ table thead th, table tbody td { text-align: center !important; }
 .entry-shell.with-side .entry-card{max-width:1180px;margin:0 auto}
 .entry-mobilebar{display:none}
 .entry-mobilebar .brand-name{color:#172033;font-size:16px}
-.inward-fetch-row{display:flex;gap:8px}.inward-fetch-row input{flex:1;min-width:0}.inward-fetch-row .btn{flex:none;min-width:96px;height:38px;padding:0 16px}
+.inward-fetch-row{display:flex;gap:8px}.inward-fetch-row input{flex:1;min-width:0}.inward-fetch-row .btn{flex:none;min-width:96px;height:38px;padding:0 16px}.inward-sync-btn{min-width:122px!important}
 .inward-summary{grid-template-columns:repeat(4,1fr)}
 .inward-po-head{margin:4px 0 0}.inward-po-head b{font-family:var(--font-display);font-size:19px;color:#172033}.inward-po-head .muted{margin-top:4px}
 .inward-tools{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin:6px 0 12px}
@@ -182,3 +182,13 @@ table thead th, table tbody td { text-align: center !important; }
 
 /* Inward line-level source columns */
 .inward-table-wrap{overflow:auto;max-width:100%;max-height:70vh}.inward-table{min-width:2600px}.inward-table th,.inward-table td{white-space:nowrap;vertical-align:middle}.inward-table th.name,.inward-table td.name{min-width:220px;max-width:360px;white-space:normal}.inward-table .inward-num{min-width:110px}
+
+/* Inward Validation — compact invoice header and focused 6-column table */
+.inward-info-grid{display:grid;grid-template-columns:minmax(220px,1.3fr) minmax(180px,.8fr) minmax(220px,1fr);gap:10px;margin:4px 0 14px}
+.inward-info{background:#F7F9FC;border:1px solid var(--line);border-radius:10px;padding:11px 14px;min-width:0}
+.inward-info span{display:block;font-size:10px;font-weight:800;letter-spacing:.7px;color:#64748B;margin-bottom:4px}
+.inward-info strong{display:block;color:#172033;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.inward-table{min-width:820px;width:100%}
+.inward-table th,.inward-table td{white-space:nowrap;vertical-align:middle}
+.inward-table th.name,.inward-table td.name{min-width:360px;max-width:620px;white-space:normal;text-align:left!important}
+@media(max-width:800px){.inward-info-grid{grid-template-columns:1fr}.inward-info strong{white-space:normal}.inward-table{min-width:760px}.inward-table th.name,.inward-table td.name{min-width:300px}}

@@ -71,14 +71,63 @@
     } finally { btn.disabled = false; btn.textContent = 'Fetch'; }
   }
 
+  /* --------------------------------------------------------------- sync Excel */
+  async function syncExcel() {
+    const email = $('inEmail').value.trim().toLowerCase();
+    if (!email) { msg('Enter your company email first.'); $('inEmail').focus(); return; }
+    if (po && entered() > 0 && !confirm('Syncing will refresh the Excel data and discard the quantities you have already entered if the invoice is reloaded. Continue?')) return;
+
+    const btn = $('inSync');
+    const fetchBtn = $('inFetch');
+    btn.disabled = true;
+    fetchBtn.disabled = true;
+    btn.textContent = '↻ Syncing…';
+    msg('Refreshing the latest Excel data from SharePoint…');
+
+    try {
+      const j = await getJson('/api/inward/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email })
+      });
+
+      const q = $('inPo').value.trim();
+      if (q) {
+        // The normal Fetch now reads the freshly refreshed cache, saving the user
+        // from manually trying the invoice again.
+        po = null;
+        $('inResult').classList.add('hidden');
+        $('inResult').innerHTML = '';
+        await fetchPo();
+        msg(`Excel synced successfully. Invoice ${q} was checked again against the latest data.`, true);
+      } else {
+        const rows = Number(j.rows || 0).toLocaleString('en-IN');
+        msg(`Excel synced successfully — ${rows} source row(s) refreshed. You can now fetch the Invoice Number.`, true);
+      }
+    } catch (e) {
+      msg(`Excel sync failed: ${e.message}`);
+    } finally {
+      btn.disabled = false;
+      fetchBtn.disabled = false;
+      btn.textContent = '↻ Sync Excel';
+    }
+  }
+
   /* ------------------------------------------------------------------- render */
   function render() {
     const m = po.meta || {};
-    const headers = po.headers || [];
-    const chips = [m.shops && m.shops.length ? `Shops: ${m.shops.join(', ')}` : ''].filter(Boolean).map(esc).join(' &nbsp;•&nbsp; ');
+    const party = (m.shops || []).filter(Boolean).join(', ') || '—';
+    const transfer = (m.transfer_to_codes || []).filter(Boolean).join(', ') || '—';
+    const documentNo = (m.documents || []).filter(Boolean).join(', ') || po.label || '—';
     $('inResult').classList.remove('hidden');
     $('inResult').innerHTML = `
-      <div class="inward-po-head"><b>Invoice ${esc(po.label)}</b>${chips ? `<div class="muted">${chips}</div>` : ''}</div>
+      <div class="inward-po-head">
+        <div class="inward-info-grid">
+          <div class="inward-info"><span>PARTY NAME</span><strong>${esc(party)}</strong></div>
+          <div class="inward-info"><span>TRANSFER-TO CODE</span><strong>${esc(transfer)}</strong></div>
+          <div class="inward-info"><span>DOCUMENT NO.</span><strong>${esc(documentNo)}</strong></div>
+        </div>
+      </div>
       <div class="entry-summary inward-summary">
         <div class="entry-stat"><span>Lines Entered</span><strong id="inStatSku">0</strong><small id="inStatSkuSub"></small></div>
         <div class="entry-stat"><span>Sales Qty</span><strong id="inStatOrder">0</strong><small>Total Quantity on this Invoice</small></div>
@@ -86,12 +135,12 @@
         <div class="entry-stat"><span>Net Variance</span><strong id="inStatVar">0</strong><small>Received − Sales Qty</small></div>
       </div>
       <div class="entry-submit-bar"><div><b>Ready to submit?</b><span class="muted" id="inProgress"></span></div><button id="inSubmit" class="btn" type="button">Submit &amp; Download Variance CSV</button></div>
-      <div class="inward-tools"><input id="inSearch" class="inward-search" placeholder="Search any invoice field…" autocomplete="off"><span class="muted">Variance = Received − Sales Qty · negative = short, positive = excess</span></div>
-      <div class="inward-table-wrap"><table class="inward-table"><thead><tr><th>#</th>${headers.map(h => `<th class="${h === 'Description' || h === 'Shop Name' ? 'name' : ''}">${esc(h)}</th>`).join('')}<th>Received Qty</th><th>Variance</th><th>Status</th></tr></thead><tbody>
+      <div class="inward-tools"><input id="inSearch" class="inward-search" placeholder="Search EAN / Description / Quantity…" autocomplete="off"><span class="muted">Variance = Received − Sales Qty · negative = short, positive = excess</span></div>
+      <div class="inward-table-wrap"><table class="inward-table"><thead><tr><th>#</th><th>EAN</th><th class="name">Description</th><th>Sales Qty</th><th>Received Qty</th><th>Variance</th><th>Status</th></tr></thead><tbody>
       ${po.lines.map((l, i) => {
         const d = l.details || {};
-        const search = headers.map(h => d[h] ?? '').join(' ');
-        return `<tr data-i="${i}" data-s="${esc(search.toLowerCase())}"><td>${i + 1}</td>${headers.map(h => `<td class="${h === 'Description' || h === 'Shop Name' ? 'name' : ''}">${esc(d[h] ?? '')}</td>`).join('')}<td><input class="inward-num" data-i="${i}" type="number" inputmode="numeric" min="0" step="1" placeholder="Enter qty"></td><td id="inVar-${i}">–</td><td id="inSt-${i}"><span class="in-pill pending">Pending</span></td></tr>`;
+        const search = [d['EAN'], d['Description'], d['Quantity']].join(' ');
+        return `<tr data-i="${i}" data-s="${esc(search.toLowerCase())}"><td>${i + 1}</td><td>${esc(d['EAN'] ?? '')}</td><td class="name">${esc(d['Description'] ?? '')}</td><td>${esc(d['Quantity'] ?? '')}</td><td><input class="inward-num" data-i="${i}" type="number" inputmode="numeric" min="0" step="1" placeholder="Enter qty"></td><td id="inVar-${i}">–</td><td id="inSt-${i}"><span class="in-pill pending">Pending</span></td></tr>`;
       }).join('')}
       </tbody></table></div>`;
 
@@ -230,6 +279,7 @@
 
   /* --------------------------------------------------------------------- init */
   $('inFetch').onclick = fetchPo;
+  $('inSync').onclick = syncExcel;
   $('inPo').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); fetchPo(); } });
   $('inEmail').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); $('inPo').focus(); } });
   showPage(location.hash.slice(1));
