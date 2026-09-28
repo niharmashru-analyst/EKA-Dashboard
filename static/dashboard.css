@@ -397,3 +397,63 @@ main{background:var(--renee-bg)}.eyebrow{color:var(--renee-pink-2)}.topbar h1{co
   .kpis{gap:8px}.kpi{min-height:92px;padding:12px}.k-value{font-size:21px}.k-sub{font-size:9px}
   .filters,.card,.toolbar-card{border-radius:12px}.grid2{gap:10px}
 }
+
+
+/* =========================================================
+   CORMATE / RENÉE DOWNLOAD BAR — dark premium theme
+   ========================================================= */
+.entry-body .app-download-mini{
+  background:linear-gradient(135deg,#0b0b0b 0%,#111111 68%,#170b12 100%)!important;
+  border:1px solid #2b2b2b!important;
+  box-shadow:0 8px 24px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,.025)!important;
+  color:#fff!important;
+  position:relative;
+  overflow:hidden;
+}
+.entry-body .app-download-mini::before{
+  content:"";
+  position:absolute;
+  left:0;
+  top:0;
+  bottom:0;
+  width:3px;
+  background:linear-gradient(180deg,#ff2d8d,#ff5eab);
+}
+.entry-body .app-download-mini > div:first-child{
+  padding-left:5px;
+}
+.entry-body .app-download-mini b{
+  color:#fff!important;
+  font-size:11px;
+  letter-spacing:.1px;
+}
+.entry-body .app-download-mini span{
+  color:#8f8f8f!important;
+}
+.entry-body .app-download-mini-actions a,
+.entry-body .app-download-mini-actions button{
+  background:#111!important;
+  border:1px solid #353535!important;
+  color:#f5f5f5!important;
+  transition:all .18s ease;
+}
+.entry-body .app-download-mini-actions a{
+  background:rgba(255,45,141,.12)!important;
+  border-color:rgba(255,45,141,.45)!important;
+  color:#ff5eab!important;
+}
+.entry-body .app-download-mini-actions a:hover{
+  background:rgba(255,45,141,.2)!important;
+  border-color:#ff2d8d!important;
+}
+.entry-body .app-download-mini-actions button:hover{
+  border-color:#666!important;
+  background:#181818!important;
+}
+@media(max-width:700px){
+  .entry-body .app-download-mini{
+    margin:0 0 10px!important;
+    padding:10px 10px 10px 12px!important;
+    border-radius:11px!important;
+  }
+}
