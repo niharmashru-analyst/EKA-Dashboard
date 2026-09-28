@@ -710,6 +710,10 @@ def ai_chat():
 @app.get("/")
 def index(): return render_template("index.html")
 
+@app.get("/download")
+@app.get("/app")
+def app_download(): return render_template("app_download.html")
+
 @app.get("/entry")
 def entry(): return render_template("entry.html")
 

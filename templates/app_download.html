@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#050505">
+<meta name="description" content="CORMATE — RENÉE workspace access. Download the Android app or open the web app.">
+<title>CORMATE • RENÉE Workspace</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root{--pink:#ff2b91;--pink2:#ff5eaf;--bg:#050505;--card:#101010;--line:#282828;--muted:#a8a8a8;--white:#fff}
+*{box-sizing:border-box}html,body{margin:0;min-height:100%;background:var(--bg);color:var(--white);font-family:Manrope,Arial,sans-serif}
+body{display:flex;align-items:center;justify-content:center;padding:28px;overflow-x:hidden}
+body:before{content:"";position:fixed;width:520px;height:520px;border-radius:50%;background:radial-gradient(circle,rgba(255,43,145,.16),transparent 68%);top:-220px;right:-160px;pointer-events:none}
+body:after{content:"";position:fixed;width:480px;height:480px;border-radius:50%;background:radial-gradient(circle,rgba(255,43,145,.10),transparent 70%);bottom:-250px;left:-170px;pointer-events:none}
+.wrap{width:min(920px,100%);position:relative;z-index:1}.brand{text-align:center;margin-bottom:42px}.logo{width:min(250px,70vw);max-height:92px;object-fit:contain}.tag{margin-top:13px;color:#aaa;letter-spacing:4px;font-size:11px;text-transform:uppercase}.intro{text-align:center;margin-bottom:28px}.intro h1{font-family:'Plus Jakarta Sans',sans-serif;font-size:clamp(25px,5vw,42px);margin:0 0 10px;letter-spacing:-1px}.intro p{margin:0;color:var(--muted);font-size:14px;line-height:1.6}.choices{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.card{background:linear-gradient(145deg,#141414,#0b0b0b);border:1px solid var(--line);border-radius:22px;padding:28px;min-height:250px;display:flex;flex-direction:column;justify-content:space-between;box-shadow:0 16px 45px rgba(0,0,0,.35)}.card:hover{border-color:rgba(255,43,145,.65);transform:translateY(-2px);transition:.2s}.icon{width:52px;height:52px;border-radius:15px;background:#090909;border:1px solid rgba(255,43,145,.45);display:grid;place-items:center;color:var(--pink);font-size:25px;box-shadow:0 0 24px rgba(255,43,145,.12)}.card h2{font-family:'Plus Jakarta Sans',sans-serif;margin:20px 0 8px;font-size:22px}.card p{margin:0;color:var(--muted);font-size:13px;line-height:1.55}.btn{margin-top:24px;display:flex;align-items:center;justify-content:center;min-height:48px;border-radius:13px;text-decoration:none;font-weight:800;font-size:14px}.btn-primary{background:linear-gradient(90deg,var(--pink),var(--pink2));color:#fff;box-shadow:0 10px 28px rgba(255,43,145,.2)}.btn-secondary{background:#151515;border:1px solid #383838;color:#fff}.meta{text-align:center;margin-top:26px;color:#747474;font-size:11px;line-height:1.6}.ios{margin-top:18px;text-align:center;color:#888;font-size:12px}.ios b{color:#ddd}.footer{text-align:center;margin-top:38px;color:#666;font-size:11px}.footer span{color:var(--pink)}
+@media(max-width:650px){body{padding:20px}.brand{margin-bottom:30px}.logo{width:220px}.choices{grid-template-columns:1fr}.card{min-height:220px;padding:23px}.intro h1{font-size:27px}.tag{letter-spacing:3px}}
+</style>
+</head>
+<body>
+<main class="wrap">
+  <header class="brand">
+    <img class="logo" src="/static/assets/cormate_logo.png" alt="CORMATE">
+    <div class="tag">Analytics · Automation · Insights</div>
+  </header>
+
+  <section class="intro">
+    <h1>Choose how you want to access RENÉE</h1>
+    <p>Use the CORMATE Android app for a dedicated mobile experience,<br>or continue directly in your browser.</p>
+  </section>
+
+  <section class="choices">
+    <article class="card">
+      <div>
+        <div class="icon">↧</div>
+        <h2>Download for Android</h2>
+        <p>Install the CORMATE app and access the RENÉE workspace in a full-screen mobile experience.</p>
+      </div>
+      <a class="btn btn-primary" href="/static/downloads/EKA-Analytics-Android.apk" download="CORMATE-Android.apk">Download Android App</a>
+    </article>
+
+    <article class="card">
+      <div>
+        <div class="icon">↗</div>
+        <h2>Visit Website</h2>
+        <p>Continue using the complete RENÉE workspace directly from your browser without installing anything.</p>
+      </div>
+      <a class="btn btn-secondary" href="/entry">Open Web App</a>
+    </article>
+  </section>
+
+  <div class="ios"><b>iPhone?</b> Open the Web App in Safari → Share → Add to Home Screen.</div>
+  <div class="meta">CORMATE is the service platform. RENÉE is the client workspace.</div>
+  <footer class="footer">© 2026 <span>CORMATE</span></footer>
+</main>
+</body>
+</html>
