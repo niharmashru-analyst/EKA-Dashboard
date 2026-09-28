@@ -507,3 +507,16 @@ function initAIShortcuts(){
 document.getElementById('aiFab')?.addEventListener('click',openAI);document.getElementById('aiClose')?.addEventListener('click',closeAI);document.getElementById('aiBackdrop')?.addEventListener('click',closeAI);document.querySelectorAll('.ai-suggestions button').forEach(b=>b.addEventListener('click',()=>aiAsk(b.dataset.q)));document.getElementById('aiForm')?.addEventListener('submit',e=>{e.preventDefault();const q=document.getElementById('aiQuestion');const text=q.value.trim();if(text){q.value='';hideAIShortcutMenu();aiAsk(text)}});
 function hideAIShortcutMenu(){document.getElementById('aiShortcutMenu')?.classList.remove('open')}
 initAIShortcuts();
+
+
+/* ===== Mobile app install helpers ===== */
+(function(){
+  const modal=document.getElementById('iosInstallModal');
+  const openBtn=document.getElementById('iosInstallBtn');
+  if(!modal) return;
+  const open=()=>{modal.classList.add('open');modal.setAttribute('aria-hidden','false');document.body.classList.add('app-install-open');};
+  const close=()=>{modal.classList.remove('open');modal.setAttribute('aria-hidden','true');document.body.classList.remove('app-install-open');};
+  if(openBtn) openBtn.addEventListener('click',open);
+  modal.querySelectorAll('[data-close-ios]').forEach(x=>x.addEventListener('click',close));
+  document.addEventListener('keydown',e=>{if(e.key==='Escape') close();});
+})();

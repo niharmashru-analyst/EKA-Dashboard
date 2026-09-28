@@ -1264,6 +1264,64 @@ def submissions():
         return jsonify({"ok":True,"records":json_records(load_local_submissions())})
     except Exception as e: return jsonify({"ok":False,"error":str(e)}),500
 
+@app.get("/api/last-submissions")
+def last_submissions():
+    """Return the latest stock submission summary for each shop mapped to the email."""
+    try:
+        email = str(request.args.get("email", "")).strip().lower()
+        if not email:
+            return jsonify({"ok": False, "error": "Email ID is required."}), 400
+        mp, _ = load_entry_sources(False)
+        mapped = sorted(mp.loc[mp["Email ID"].astype(str).str.strip().str.lower() == email, "Store Name"].dropna().astype(str).str.strip().unique().tolist())
+        if not mapped:
+            return jsonify({"ok": True, "records": []})
+
+        df = load_submissions_live()
+        if df is None or df.empty:
+            return jsonify({"ok": True, "records": []})
+
+        # Normalize both local SQLite and remote Apps Script field names.
+        rename = {
+            "store": "store_name", "Store Name": "store_name", "Shop Name": "store_name",
+            "Email": "email", "Email ID": "email", "Submitted By": "email",
+            "Date": "submitted_at", "Submitted At": "submitted_at", "timestamp": "submitted_at",
+            "Timestamp": "submitted_at", "Total Qty": "total", "Total": "total",
+            "SKU": "ean_code", "EAN": "ean_code", "EAN Code": "ean_code",
+        }
+        df = df.rename(columns={c: rename.get(c, c) for c in df.columns}).copy()
+        for c, default in [("store_name", ""), ("email", ""), ("submitted_at", ""), ("total", 0)]:
+            if c not in df.columns: df[c] = default
+        df["store_name"] = df["store_name"].fillna("").astype(str).str.strip()
+        df["email"] = df["email"].fillna("").astype(str).str.strip().str.lower()
+        df["total"] = pd.to_numeric(df["total"], errors="coerce").fillna(0)
+        # A user should see submissions for their mapped shops. If a remote service
+        # stores the submitting email differently, the shop mapping remains the gate.
+        df = df[df["store_name"].isin(mapped)].copy()
+        if df.empty:
+            return jsonify({"ok": True, "records": []})
+        df["_ts"] = pd.to_datetime(df["submitted_at"], errors="coerce", utc=True)
+        out = []
+        for store in mapped:
+            z = df[df["store_name"] == store].copy()
+            if z.empty: continue
+            latest = z["_ts"].max()
+            if pd.isna(latest):
+                latest_rows = z.tail(1)
+                latest_text = str(latest_rows.iloc[0].get("submitted_at", ""))
+            else:
+                latest_rows = z[z["_ts"] == latest]
+                latest_text = latest.isoformat()
+            out.append({
+                "store_name": store,
+                "submitted_at": latest_text,
+                "email": str(latest_rows["email"].iloc[-1] if "email" in latest_rows else ""),
+                "total_qty": float(latest_rows["total"].sum()),
+                "sku_count": int(len(latest_rows)),
+            })
+        return jsonify({"ok": True, "records": out})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 @app.get("/api/export")
 def export():
     try:

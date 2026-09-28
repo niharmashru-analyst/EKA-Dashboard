@@ -2,6 +2,9 @@ let email = '', stores = [], selectedStore = '', master = [], rows = [];
 let lastSubmission = null;
 let currentPage = 1;
 const PAGE_SIZE = 25;
+let entrySearch = '';
+let uidSeed = 1;
+let entrySortTimer = null;
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 let entryStep=1;
@@ -109,6 +112,7 @@ async function loadMeta() {
     }
     $('continueEntry').disabled = !selectedStore;
     msg(`Email verified. ${stores.length} shop(s) mapped.`, true);
+    await loadLastSubmissions();
   } catch (e) {
     msg(e.message);
     $('store').disabled = true;
@@ -126,7 +130,7 @@ async function loadSku() {
   try {
     const j=await getJson('/api/entry-meta?email='+encodeURIComponent(email)+'&store='+encodeURIComponent(selectedStore)+'&_ts='+Date.now());
     master=j.master_skus||master; const available=j.available_skus||[];
-    rows=available.map(x=>({ean:String(x['EAN Code']??'').trim(),name:String(x['Product Name']??''),stock:0,tester:0})); currentPage=1; entryStep=2;
+    rows=available.map(x=>({uid:uidSeed++,ean:String(x['EAN Code']??'').trim(),name:String(x['Product Name']??''),stock:0,tester:0})); entrySearch=''; currentPage=1; entryStep=2;
     $('setupActions').style.display='none'; $('email').disabled=true; $('store').disabled=true;
     setEntryLoading(true,'Loading SKU Entry',`${rows.length.toLocaleString('en-IN')} SKU(s) found. Building the entry table…`);
     render(); msg(`${rows.length.toLocaleString('en-IN')} SKU(s) loaded for ${selectedStore}.`,true);
@@ -134,12 +138,55 @@ async function loadSku() {
   finally { setEntryLoading(false); if(button){button.disabled=!selectedStore;button.textContent='Continue to SKU Entry →';} }
 }
 
+function filteredRows() {
+  const q = String(entrySearch || '').trim().toLowerCase();
+  if (!q) return rows.slice();
+  return rows.filter(r => String(r.ean || '').toLowerCase().includes(q) || String(r.name || '').toLowerCase().includes(q));
+}
+
+function sortRowsByTotal() {
+  rows.sort((a, b) => {
+    const totalDiff = (Number(b.stock || 0) + Number(b.tester || 0)) - (Number(a.stock || 0) + Number(a.tester || 0));
+    if (totalDiff) return totalDiff;
+    return String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' });
+  });
+}
+
+function renderLastSubmissions(records) {
+  const box = $('lastSubmissionPanel');
+  if (!box) return;
+  const list = Array.isArray(records) ? records : [];
+  if (!stores.length) { box.classList.add('hidden'); return; }
+  const byStore = {};
+  list.forEach(r => { byStore[String(r.store_name || '').trim()] = r; });
+  box.innerHTML = `<div class="last-sub-head"><div><b>Last Submission • Shop Wise</b><span>Latest stock submission available for each mapped shop</span></div><span class="last-sub-refresh">Live</span></div><div class="last-sub-grid">${stores.map(store => {
+    const r = byStore[store];
+    const date = r && r.submitted_at ? new Date(r.submitted_at) : null;
+    const when = date && !Number.isNaN(date.getTime()) ? date.toLocaleString('en-IN', {day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}) : 'No submission yet';
+    const total = r ? Number(r.total_qty || 0).toLocaleString('en-IN') : '—';
+    const skus = r ? Number(r.sku_count || 0).toLocaleString('en-IN') : '—';
+    const active = String(store) === String(selectedStore) ? ' active' : '';
+    return `<div class="last-sub-item${active}"><div class="last-sub-store">${esc(store)}</div><div class="last-sub-time">${esc(when)}</div><div class="last-sub-meta"><span>${skus} SKU</span><span>${total} Qty</span></div>${r && r.email ? `<div class="last-sub-by">By ${esc(r.email)}</div>` : ''}</div>`;
+  }).join('')}</div>`;
+  box.classList.remove('hidden');
+}
+
+async function loadLastSubmissions() {
+  try {
+    const j = await getJson('/api/last-submissions?email=' + encodeURIComponent(email) + '&_ts=' + Date.now());
+    renderLastSubmissions(j.records || []);
+  } catch (_) {
+    renderLastSubmissions([]);
+  }
+}
+
 function render() {
   $('skuArea').classList.remove('hidden');
-  const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  const filtered = filteredRows();
+  const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   currentPage = Math.min(currentPage, pages);
   const start = (currentPage - 1) * PAGE_SIZE;
-  const visible = rows.slice(start, start + PAGE_SIZE);
+  const visible = filtered.slice(start, start + PAGE_SIZE);
   const entered = enteredCount();
 
   $('skuArea').innerHTML = `
@@ -151,14 +198,19 @@ function render() {
       <div><b>Ready to submit?</b><span class="muted"> ${entered} SKU(s) entered • ${enteredQty().toLocaleString('en-IN')} total Qty</span></div>
       <button id="submitEntryTop" class="btn" ${rows.length ? '' : 'disabled'}>Submit Stock</button>
     </div>
+    <div class="entry-search-sort">
+      <div class="entry-search-wrap"><span>⌕</span><input id="entrySearch" type="search" value="${esc(entrySearch)}" placeholder="Search EAN / SKU / Product name…" autocomplete="off"></div>
+      <div class="entry-sort-note"><b>Total ↓</b><span>Highest entered Stock + Tester stays on top</span></div>
+    </div>
     <div class="master-picker hidden" id="masterPicker">
       <div class="master-picker-head"><b>Add SKU From Master</b><button id="closeMaster" class="picker-close">✕</button></div>
       <input id="masterSearch" class="master-search" placeholder="Search EAN / SKU / Product name…" autocomplete="off">
       <div id="masterResults" class="master-results"></div>
     </div>
-    <div class="entry-page-note">Showing <b>${rows.length ? start + 1 : 0}–${Math.min(start + PAGE_SIZE, rows.length)}</b> of <b>${rows.length}</b> SKUs</div>
-    <div class="entry-table-wrap"><table class="entry-table"><thead><tr><th>EAN / SKU</th><th>Product</th><th>Stock</th><th>Tester</th><th>Total</th></tr></thead><tbody>
-    ${visible.map((r, localIndex) => { const i = start + localIndex; return `<tr><td>${esc(r.ean)}</td><td>${esc(r.name)}</td><td><input class="entry-num" data-i="${i}" data-k="stock" type="number" min="0" step="1" value="${Number(r.stock || 0)}"></td><td><input class="entry-num" data-i="${i}" data-k="tester" type="number" min="0" step="1" value="${Number(r.tester || 0)}"></td><td class="total-cell" id="tot-${i}">${Number(r.stock || 0) + Number(r.tester || 0)}</td></tr>`; }).join('')}
+    <div class="entry-page-note">Showing <b>${filtered.length ? start + 1 : 0}–${Math.min(start + PAGE_SIZE, filtered.length)}</b> of <b>${filtered.length}</b> matching SKUs${entrySearch ? ` • ${rows.length} total` : ''}</div>
+    <div class="entry-table-wrap"><table class="entry-table"><thead><tr><th>EAN / SKU</th><th>Product</th><th>Stock</th><th>Tester</th><th>Total ↓</th></tr></thead><tbody>
+    ${visible.map((r) => { const i = rows.indexOf(r); return `<tr><td>${esc(r.ean)}</td><td>${esc(r.name)}</td><td><input class="entry-num" data-uid="${r.uid}" data-k="stock" type="number" min="0" step="1" value="${Number(r.stock || 0)}"></td><td><input class="entry-num" data-uid="${r.uid}" data-k="tester" type="number" min="0" step="1" value="${Number(r.tester || 0)}"></td><td class="total-cell" id="tot-${r.uid}">${Number(r.stock || 0) + Number(r.tester || 0)}</td></tr>`; }).join('')}
+    ${visible.length ? '' : `<tr><td colspan="5" class="entry-empty-row">No SKU matches your search.</td></tr>`}
     </tbody></table></div>
     <div class="entry-pagination">
       <button class="btn secondary small" id="prevPage" ${currentPage <= 1 ? 'disabled' : ''}>← Previous</button>
@@ -166,12 +218,36 @@ function render() {
       <button class="btn secondary small" id="nextPage" ${currentPage >= pages ? 'disabled' : ''}>Next →</button>
     </div>`;
 
+  const searchBox = $('entrySearch');
+  if (searchBox) {
+    searchBox.oninput = () => { entrySearch = searchBox.value; currentPage = 1; render(); const s=$('entrySearch'); if(s){s.focus();s.setSelectionRange(s.value.length,s.value.length);} };
+  }
+
   document.querySelectorAll('.entry-num').forEach(x => x.oninput = () => {
-    rows[+x.dataset.i][x.dataset.k] = Math.max(0, Number(x.value || 0));
-    $('tot-' + x.dataset.i).textContent = rows[+x.dataset.i].stock + rows[+x.dataset.i].tester;
+    const row = rows.find(r => String(r.uid) === String(x.dataset.uid));
+    if (!row) return;
+    row[x.dataset.k] = Math.max(0, Number(x.value || 0));
+    const total = row.stock + row.tester;
+    const cell = $('tot-' + row.uid);
+    if (cell) cell.textContent = total;
     updateSummary();
     const top = $('submitEntryTop');
     if (top) top.disabled = !rows.length;
+    clearTimeout(entrySortTimer);
+    const activeUid = x.dataset.uid, activeKey = x.dataset.k;
+    entrySortTimer = setTimeout(() => {
+      sortRowsByTotal();
+      currentPage = 1;
+      render();
+      const focusInput = document.querySelector(`.entry-num[data-uid=\"${CSS.escape(activeUid)}\"][data-k=\"${activeKey}\"]`);
+      if (focusInput) { focusInput.focus(); focusInput.setSelectionRange(focusInput.value.length, focusInput.value.length); }
+    }, 500);
+  });
+  document.querySelectorAll('.entry-num').forEach(x => x.onchange = () => {
+    clearTimeout(entrySortTimer);
+    sortRowsByTotal();
+    currentPage = 1;
+    render();
   });
 
   $('backToSetup').onclick = showSetup;
@@ -212,7 +288,7 @@ function addMasterSku(ean) {
   const found = master.find(m => String(m['EAN Code']).trim() === String(ean).trim());
   if (!found) return;
   if (rows.some(r => String(r.ean).trim() === String(ean).trim())) { msg('SKU is already in the table.'); return; }
-  rows.push({ ean: String(found['EAN Code']).trim(), name: String(found['Product Name'] || ''), stock: 0, tester: 0 });
+  rows.push({ uid:uidSeed++, ean: String(found['EAN Code']).trim(), name: String(found['Product Name'] || ''), stock: 0, tester: 0 });
   currentPage = Math.ceil(rows.length / PAGE_SIZE);
   render();
   msg(`${found['Product Name']} added from SKU Master.`, true);
@@ -248,6 +324,7 @@ async function submitAll() {
     lastSubmission = { email, store: selectedStore, rows: enteredRows, reportRows, savedRows: saved, timestamp: new Date() };
     showPopup('Submission Successful', `${saved.toLocaleString('en-IN')} SKU rows were submitted successfully for ${selectedStore}. Two PDFs are available below.`, true, true);
     msg(`${saved.toLocaleString('en-IN')} SKU rows submitted successfully.`, true);
+    await loadLastSubmissions();
     rows.forEach(r => { r.stock = 0; r.tester = 0; });
     currentPage = 1;
     render();
@@ -287,15 +364,17 @@ function downloadSubmissionPdf() {
   const ts = lastSubmission.timestamp;
   const dateStr = ts.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
   const timeStr = ts.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
-  const totalStock = lastSubmission.rows.reduce((a, r) => a + r.stock, 0);
-  const totalTester = lastSubmission.rows.reduce((a, r) => a + r.tester, 0);
+  const pdfRows = lastSubmission.rows.filter(r => Number(r.total || 0) > 0);
+  if (!pdfRows.length) { msg('No Stock / Tester quantity was entered, so there is nothing to put in the Stock Verification PDF.', false); return; }
+  const totalStock = pdfRows.reduce((a, r) => a + r.stock, 0);
+  const totalTester = pdfRows.reduce((a, r) => a + r.tester, 0);
   const totalQty = totalStock + totalTester;
 
   const details = [
     ['Shop / Store', lastSubmission.store],
     ['Submitted By', lastSubmission.email],
     ['Date & Time', `${dateStr}, ${timeStr}`],
-    ['SKUs Submitted', String(lastSubmission.rows.length)]
+    ['SKUs Submitted', String(pdfRows.length)]
   ];
   doc.setFontSize(9.5);
   details.forEach((d, i) => {
@@ -311,7 +390,7 @@ function downloadSubmissionPdf() {
     startY: y,
     margin: { left: marginX, right: marginX, bottom: 26 },
     head: [['#', 'EAN / SKU Code', 'Product Name', 'Stock Qty', 'Tester Qty', 'Total Qty']],
-    body: lastSubmission.rows.map((r, i) => [i + 1, r.ean, r.name, r.stock, r.tester, r.total]),
+    body: pdfRows.map((r, i) => [i + 1, r.ean, r.name, r.stock, r.tester, r.total]),
     foot: [['', '', 'Total', totalStock, totalTester, totalQty]],
     styles: { font: 'helvetica', fontSize: 9, cellPadding: 2.6, textColor: [30, 41, 59], lineColor: [217, 225, 236], lineWidth: 0.1 },
     headStyles: { fillColor: [23, 32, 51], textColor: 255, fontStyle: 'bold', fontSize: 8.5 },
@@ -327,7 +406,7 @@ function downloadSubmissionPdf() {
   doc.line(marginX, finalY, marginX + 62, finalY);
   doc.line(pageWidth - marginX - 62, finalY, pageWidth - marginX, finalY);
   doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(71, 85, 105);
-  doc.text('Field Staff Signature', marginX, finalY + 5);
+  doc.text('BA Signature', marginX, finalY + 5);
   doc.text('Store Manager Signature', pageWidth - marginX - 62, finalY + 5);
 
   const pageCount = doc.internal.getNumberOfPages();
@@ -392,9 +471,22 @@ function downloadVariancePdf() {
 
 $('email').addEventListener('blur', loadMeta);
 $('email').addEventListener('keydown', e => { if (e.key === 'Enter') loadMeta(); });
-$('store').onchange = () => { selectedStore=$('store').value||''; $('continueEntry').disabled=!selectedStore; };
+$('store').onchange = () => { selectedStore=$('store').value||''; $('continueEntry').disabled=!selectedStore; loadLastSubmissions(); };
 $('continueEntry').onclick = loadSku;
 $('syncData').onclick = syncData;
 
 updateSummary();
 showSetup();
+
+
+/* ===== iOS Home Screen instructions ===== */
+(function(){
+  const modal=document.getElementById('iosInstallModal');
+  const btn=document.getElementById('iosInstallBtnEntry');
+  if(!modal) return;
+  const open=()=>{modal.classList.add('open');modal.setAttribute('aria-hidden','false');document.body.classList.add('app-install-open');};
+  const close=()=>{modal.classList.remove('open');modal.setAttribute('aria-hidden','true');document.body.classList.remove('app-install-open');};
+  if(btn) btn.addEventListener('click',open);
+  modal.querySelectorAll('[data-close-ios]').forEach(x=>x.addEventListener('click',close));
+  document.addEventListener('keydown',e=>{if(e.key==='Escape') close();});
+})();
