@@ -13,6 +13,9 @@
   const closeSide = () => { $('entrySide').classList.remove('open'); $('entrySideBackdrop').classList.remove('open'); };
 
   function showPage(name) {
+    // Inward Validation is intentionally locked for now. Keep the tab visible,
+    // but never allow navigation to the page until it is unlocked.
+    if (name === 'inward') name = 'stock';
     if (!PAGES[name]) name = 'stock';
     Object.entries(PAGES).forEach(([k, id]) => $(id).classList.toggle('hidden', k !== name));
     document.querySelectorAll('#entrySide .nav').forEach(b => b.classList.toggle('active', b.dataset.page === name));
@@ -20,7 +23,7 @@
     if (location.hash !== '#' + name) history.replaceState(null, '', '#' + name);
     closeSide();
   }
-  document.querySelectorAll('#entrySide .nav').forEach(b => b.onclick = () => showPage(b.dataset.page));
+  document.querySelectorAll('#entrySide .nav').forEach(b => b.onclick = () => { if (b.disabled || b.dataset.page === 'inward') return; showPage(b.dataset.page); });
   $('entryMenu').onclick = () => $('entrySide').classList.contains('open') ? closeSide() : openSide();
   $('entrySideBackdrop').onclick = closeSide;
   window.addEventListener('hashchange', () => showPage(location.hash.slice(1)));

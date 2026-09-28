@@ -260,6 +260,11 @@ table thead th, table tbody td { text-align: center !important; }
 }
 
 
+/* Locked Field Entry tab */
+#entrySide .nav.nav-locked{opacity:.58;cursor:not-allowed;color:#777!important}
+#entrySide .nav.nav-locked:hover{background:transparent!important}
+#entrySide .nav.nav-locked .nav-lock{margin-left:auto!important;font-size:11px;opacity:.85}
+
 /* =========================================================
    RENÉE MOBILE FIELD ENTRY — premium black / white / pink
    ========================================================= */
@@ -282,12 +287,16 @@ table thead th, table tbody td { text-align: center !important; }
   .entry-body .sidebar .nav.active{background:rgba(255,45,141,.10);color:var(--renee-pink);box-shadow:inset 3px 0 var(--renee-pink)}
   .entry-shell.with-side{padding:0 10px 28px!important}
   .entry-mobilebar{
-    position:sticky;top:0;z-index:40;margin:0 -10px 10px!important;padding:10px 12px;
-    min-height:54px;background:rgba(5,5,5,.94);backdrop-filter:blur(12px);
+    position:sticky;top:0;z-index:40;margin:0 -10px 10px!important;
+    padding:calc(10px + env(safe-area-inset-top, 0px)) 12px 10px;
+    min-height:calc(54px + env(safe-area-inset-top, 0px));
+    background:rgba(5,5,5,.97);backdrop-filter:blur(12px);
     border-bottom:1px solid #1D1D1D;display:flex!important;align-items:center;justify-content:center;
   }
-  .entry-mobilebar .menu-toggle{position:absolute;left:10px;top:9px;width:36px;height:36px;border:1px solid #303030;background:#111;color:#fff;border-radius:9px;font-size:17px}
-  .renee-mobile-logo{width:105px;height:38px;object-fit:contain;display:block}
+  .entry-mobilebar .menu-toggle{position:absolute;left:10px;top:calc(9px + env(safe-area-inset-top, 0px));width:36px;height:36px;border:1px solid #303030;background:#111;color:#fff;border-radius:9px;font-size:17px}
+  .renee-mobile-logo{width:94px;height:32px;object-fit:contain;display:block;position:relative;z-index:1}
+  .entry-body .nav.nav-locked{opacity:.5}
+  .entry-body .nav.nav-locked .nav-lock{margin-left:auto!important;font-size:10px}
   .entry-body .app-download-mini{background:#101010;border:1px solid #292929;color:#fff;box-shadow:none}
   .entry-body .app-download-mini b{color:#fff}.entry-body .app-download-mini span{color:#8F8F8F}
   .entry-body .app-download-mini-actions a,.entry-body .app-download-mini-actions button{background:#151515;border-color:#353535;color:#fff}
