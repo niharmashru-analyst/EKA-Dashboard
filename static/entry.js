@@ -212,6 +212,13 @@ function render() {
     ${visible.map((r) => { const i = rows.indexOf(r); return `<tr><td>${esc(r.ean)}</td><td>${esc(r.name)}</td><td><input class="entry-num" data-uid="${r.uid}" data-k="stock" type="number" min="0" step="1" value="${Number(r.stock || 0)}"></td><td><input class="entry-num" data-uid="${r.uid}" data-k="tester" type="number" min="0" step="1" value="${Number(r.tester || 0)}"></td><td class="total-cell" id="tot-${r.uid}">${Number(r.stock || 0) + Number(r.tester || 0)}</td></tr>`; }).join('')}
     ${visible.length ? '' : `<tr><td colspan="5" class="entry-empty-row">No SKU matches your search.</td></tr>`}
     </tbody></table></div>
+    <div class="entry-mobile-list">
+      ${visible.map((r) => { const total = Number(r.stock || 0) + Number(r.tester || 0); return `<article class="sku-entry-card" data-uid-card="${r.uid}">
+        <div class="sku-card-top"><div class="sku-card-thumb">R</div><div class="sku-card-info"><b>${esc(r.name || 'Unnamed Product')}</b><span>SKU / EAN: ${esc(r.ean || '—')}</span></div><div class="sku-card-total"><small>Total</small><strong id="mobile-tot-${r.uid}">${total}</strong></div></div>
+        <div class="sku-card-inputs"><label><span>Stock</span><input class="entry-num" data-uid="${r.uid}" data-k="stock" type="number" min="0" step="1" value="${Number(r.stock || 0)}"></label><label><span>Tester</span><input class="entry-num" data-uid="${r.uid}" data-k="tester" type="number" min="0" step="1" value="${Number(r.tester || 0)}"></label></div>
+      </article>`; }).join('')}
+      ${visible.length ? '' : `<div class="entry-mobile-empty">No SKU matches your search.</div>`}
+    </div>
     <div class="entry-pagination">
       <button class="btn secondary small" id="prevPage" ${currentPage <= 1 ? 'disabled' : ''}>← Previous</button>
       <span>Page <b>${currentPage}</b> of <b>${pages}</b></span>
@@ -230,6 +237,8 @@ function render() {
     const total = row.stock + row.tester;
     const cell = $('tot-' + row.uid);
     if (cell) cell.textContent = total;
+    const mobileCell = $('mobile-tot-' + row.uid);
+    if (mobileCell) mobileCell.textContent = total;
     updateSummary();
     const top = $('submitEntryTop');
     if (top) top.disabled = !rows.length;
