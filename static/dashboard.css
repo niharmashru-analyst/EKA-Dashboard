@@ -344,3 +344,47 @@ table thead th, table tbody td { text-align: center !important; }
   .entry-body .app-install-card{background:#111;color:#fff;border-color:#303030}.entry-body .app-install-head{border-color:#2B2B2B}.entry-body .app-install-head h3{color:#fff}.entry-body .ios-steps p{color:#bbb}.entry-body .ios-steps span{background:rgba(255,45,141,.14);color:#ff5eab}.entry-body .ios-note{background:#171717;border-color:#333;color:#aaa}.entry-body .modal-close{background:#151515;color:#fff;border-color:#333}
 }
 @media(min-width:701px){.entry-mobile-list{display:none}}
+
+
+/* =========================================================
+   RENÉE CLIENT WORKSPACE — BLACK / WHITE / PINK THEME
+   CORMATE is the parent/native app brand; RENÉE remains the
+   client-facing workspace brand inside this application.
+   ========================================================= */
+:root{
+  --renee-pink:#ff2d8d;
+  --renee-pink-2:#ff5eab;
+  --renee-bg:#070707;
+  --renee-panel:#101010;
+  --renee-panel-2:#151515;
+  --renee-line:#292929;
+  --renee-text:#f7f7f7;
+  --renee-muted:#8b8b8b;
+  --renee-good:#34d399;
+}
+html,body{background:var(--renee-bg);color:var(--renee-text)}
+body{font-family:'Manrope',Arial,sans-serif}
+.sidebar{background:#090909;border-right:1px solid var(--renee-line);box-shadow:10px 0 40px rgba(0,0,0,.18)}
+.brand-mark{background:linear-gradient(135deg,#ff2d8d,#ff5eab);color:#fff;font-family:'Manrope',Arial,sans-serif}
+.brand-name{color:#fff}.brand-name span{color:var(--renee-pink)}.brand-sub,.side-note{color:#777}.side-note{border-top-color:var(--renee-line)}.side-note b{color:var(--renee-pink)}
+.nav{color:#b8b8b8}.nav:hover{background:#151515;color:#fff}.nav.active{background:rgba(255,45,141,.12);color:var(--renee-pink-2);box-shadow:inset 3px 0 var(--renee-pink)}
+main{background:var(--renee-bg)}.eyebrow{color:var(--renee-pink-2)}.topbar h1{color:#fff}.badge{background:#111;border-color:var(--renee-line);color:#999}
+.btn{background:var(--renee-pink);border-color:var(--renee-pink);color:#fff;border-radius:9px}.btn.secondary{background:#111;border-color:#383838;color:#fff}.btn:hover{filter:brightness(1.08)}
+.filters,.card,.toolbar-card,.kpi,.variance-filters{background:linear-gradient(180deg,#111 0%,#0d0d0d 100%);border-color:var(--renee-line);box-shadow:0 8px 30px rgba(0,0,0,.2)}
+.filter>label,.k-title,.muted{color:#858585}.filter select,.filter input,.multi-trigger,.multi-menu,.multi-search{background:#111;color:#fff;border-color:#343434}.multi-option{color:#ddd}.multi-foot{border-color:#292929}
+.seg{border-color:#333}.seg button{background:#111;color:#888}.seg button.active{background:rgba(255,45,141,.13);color:var(--renee-pink-2)}
+.k-value{color:#fff}.k-sub{color:#777}.good .k-value{color:var(--renee-good)}.bad .k-value{color:#ff6b8a}
+.card-title{color:#fff}.table-wrap{border-color:var(--renee-line)}table{background:#0e0e0e}th{background:#141414;color:#888;border-color:#292929}td{color:#ddd;border-color:#242424}tbody tr:hover td{background:#181018}.table-foot{color:#777}
+.modal-overlay{background:rgba(0,0,0,.72)}.modal{background:#101010;border:1px solid #303030;color:#fff}.modal-head{border-color:#292929}.modal-head h3{color:#fff}.modal-sub{color:#777}.modal-close{background:#151515;color:#fff;border-color:#333}
+.error{background:rgba(234,0,30,.08);border-color:rgba(234,0,30,.35)}
+.entry-body{background:radial-gradient(circle at 50% -10%,rgba(255,45,141,.08),transparent 32%),#070707;color:#fff}.entry-shell{color:#fff}.entry-card{background:linear-gradient(180deg,#111 0%,#0b0b0b 100%);border-color:#292929;box-shadow:0 12px 40px rgba(0,0,0,.28)}.entry-card h1{color:#fff}.entry-grid .filter input,.entry-grid .filter select{background:#101010;color:#fff;border-color:#333}
+.entry-stat{background:#101010;border-color:#292929}.entry-stat span,.entry-stat small{color:#777}.entry-stat strong{color:#fff}.entry-msg.good{background:rgba(52,211,153,.08);color:#6ee7b7}.entry-msg.bad{background:rgba(234,0,30,.08);color:#ff7b91}
+.sidebar-backdrop{background:rgba(0,0,0,.7)}
+/* Keep app-install/download UI available in normal browser, but never inside native CORMATE app. */
+.cormate-native-app .app-download-banner,.cormate-native-app .app-download-mini,.cormate-native-app #iosInstallModal{display:none!important}
+
+@media(max-width:700px){
+  main{padding:12px;background:#070707}.topbar{margin-bottom:12px}.topbar h1{font-size:23px}.actions{width:100%;justify-content:space-between}.view-toggle{background:#111;border-radius:9px;padding:2px}.view-label{display:none}.view-btn{background:#111!important;color:#888!important;border-color:transparent!important}.view-btn.active{background:rgba(255,45,141,.14)!important;color:#ff5eab!important}
+  .kpis{gap:8px}.kpi{min-height:92px;padding:12px}.k-value{font-size:21px}.k-sub{font-size:9px}
+  .filters,.card,.toolbar-card{border-radius:12px}.grid2{gap:10px}
+}
