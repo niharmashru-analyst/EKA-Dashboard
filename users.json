@@ -1,0 +1,16 @@
+{
+  "users": {
+    "nihar.mashru@reneecosmetics.in": {
+      "name": "Admin",
+      "password": "Admin@123",
+      "access": ["stock_entry", "dashboard", "admin"],
+      "status": ""
+    },
+    "nihar@reneecosmetics.in": {
+      "name": "Nihar",
+      "password": "renee",
+      "access": ["stock_entry"],
+      "status": ""
+    }
+  }
+}
