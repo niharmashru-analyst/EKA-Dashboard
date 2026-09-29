@@ -712,3 +712,7 @@ tbody tr:hover td,.entry-table tbody tr:hover td,.inward-table tbody tr:hover td
   -webkit-box-shadow:0 0 0 1000px #0a0a0a inset!important;
   transition:background-color 9999s ease-out 0s!important;
 }
+
+/* CORMATE / RENÉE global sign-out controls */
+.sidebar-signout{display:flex;align-items:center;gap:9px;margin:18px 14px 14px;padding:11px 13px;border:1px solid #292929;border-radius:11px;background:#101010;color:#f7f7f7;text-decoration:none;font-size:13px;font-weight:800;transition:.18s ease}.sidebar-signout:hover{border-color:#ff2b8a;color:#ff72b4;background:#151015}.signout-btn{display:inline-flex!important;align-items:center;justify-content:center;gap:6px;text-decoration:none!important;border:1px solid #292929!important;background:#111!important;color:#f7f7f7!important}.signout-btn:hover{border-color:#ff2b8a!important;color:#ff72b4!important;background:#151015!important}
+@media(max-width:760px){.signout-btn{padding:9px 11px!important;font-size:12px}.sidebar-signout{margin-top:14px}}
