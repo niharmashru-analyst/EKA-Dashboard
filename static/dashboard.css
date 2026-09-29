@@ -556,3 +556,15 @@ tr:hover td{background:#151515!important}
 .footer{color:#62626a!important}
 .empty{color:#777!important}
 
+
+
+/* CORMATE / RENÉE — CALM ANALYTICAL CHART SYSTEM */
+.chart,
+.chart canvas,
+.echarts-for-react,
+[class*="echarts"]{font-synthesis:none}
+.card:has(.chart) .card-title{
+  letter-spacing:-.01em;
+  font-weight:650!important;
+}
+.chart{overflow:hidden}

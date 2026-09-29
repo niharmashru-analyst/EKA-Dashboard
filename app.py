@@ -7,7 +7,11 @@ import re
 from flask import Flask, jsonify, render_template, request, Response, session, redirect
 
 app = Flask(__name__)
-app.secret_key = os.getenv("SECRET_KEY", "CORMATE-EKA-2026-CHANGE-ME")
+SECRET_KEY = os.getenv("SECRET_KEY", "").strip()
+if not SECRET_KEY:
+    raise RuntimeError("SECRET_KEY must be configured in the server environment; refusing to start with a fallback key.")
+app.secret_key = SECRET_KEY
+app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE=os.getenv("SESSION_COOKIE_SAMESITE", "Lax"), SESSION_COOKIE_SECURE=os.getenv("SESSION_COOKIE_SECURE", "1").strip().lower() not in {"0", "false", "no"})
 DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@cormate.com").strip().lower()
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "").strip()
@@ -31,6 +35,13 @@ def compress_response(response):
     response.headers['Content-Encoding'] = 'gzip'
     response.headers['Content-Length'] = str(len(response.get_data()))
     response.headers['Vary'] = 'Accept-Encoding'
+    return response
+
+@app.after_request
+def security_headers(response):
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     return response
 EXCEL_URL = os.getenv("EXCEL_URL", "").strip()
 EXCEL_SHEET = os.getenv("EXCEL_SHEET", "Stock_Data").strip()
@@ -699,26 +710,34 @@ def _load_users_config():
         return {"users": {}}
     with open(USERS_JSON_PATH, "r", encoding="utf-8-sig") as f:
         payload = json.load(f)
-    return payload if isinstance(payload, dict) else {"users": {}}
+    if not isinstance(payload, dict):
+        return {"users": {}}
+    users = payload.get("users", {})
+    if not isinstance(users, dict):
+        raise RuntimeError("users.json must contain a users object.")
+    normalized = {}
+    for raw_email, rec in users.items():
+        key = str(raw_email or "").strip().lower()
+        if key and isinstance(rec, dict): normalized[key] = rec
+    return {**payload, "users": normalized}
 
 def _user_record(email):
     email = str(email or "").strip().lower()
-    users = _load_users_config().get("users", {})
-    rec = users.get(email)
+    rec = _load_users_config().get("users", {}).get(email)
     return rec if isinstance(rec, dict) else None
 
 def _check_password(rec, password):
-    # Plain password is intentionally supported for easy JSON maintenance.
-    # For stronger security, a future users.json can use password_hash instead.
-    if not rec:
-        return False
-    if "password" in rec and str(rec.get("password", "")) == password:
-        return True
-    stored_hash = str(rec.get("password_hash", ""))
+    if not rec: return False
+    stored_hash = str(rec.get("password_hash", "")).strip()
     if stored_hash:
-        import hashlib
-        return hashlib.sha256(password.encode("utf-8")).hexdigest() == stored_hash
-    return False
+        try:
+            from werkzeug.security import check_password_hash
+            return check_password_hash(stored_hash, password)
+        except Exception:
+            import hashlib, hmac
+            return hmac.compare_digest(hashlib.sha256(password.encode("utf-8")).hexdigest(), stored_hash)
+    import hmac
+    return hmac.compare_digest(str(rec.get("password", "")), password)
 
 def _is_admin(email, password=None):
     email = str(email or "").strip().lower()
@@ -726,7 +745,8 @@ def _is_admin(email, password=None):
         return False
     if password is None:
         return bool(session.get("is_admin"))
-    return bool(ADMIN_PASSWORD) and password == ADMIN_PASSWORD
+    import hmac
+    return bool(ADMIN_PASSWORD) and hmac.compare_digest(password, ADMIN_PASSWORD)
 
 def _has_access(page):
     if session.get("is_admin"):
@@ -841,9 +861,9 @@ def ai_chat():
           "If the result is empty or insufficient, say exactly what data is missing. Do not answer unrelated questions. "
           "Keep answers concise, structured, and business-friendly. If the user explicitly asks for Top 10 or 10 items and the server result contains 10 items, include all 10 items; do not stop early.")
         user=("Question: "+question+"\n\nDashboard context (authoritative):\n"+json.dumps(context,ensure_ascii=False,separators=(",",":")))
-        url=f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+        url=f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
         body={"system_instruction":{"parts":[{"text":system}]},"contents":[{"role":"user","parts":[{"text":user}]}],"generationConfig":{"temperature":0.2,"maxOutputTokens":2200}}
-        r=requests.post(url,json=body,timeout=45)
+        r=requests.post(url,json=body,headers={"x-goog-api-key": GEMINI_API_KEY},timeout=45)
         if r.status_code>=400:
             try: detail=r.json().get("error",{}).get("message",r.text)
             except Exception: detail=r.text
@@ -1055,6 +1075,8 @@ def entry_meta():
         stores=sorted(mp.loc[mp["Email ID"]==email,"Store Name"].unique().tolist()) if email else []
         if email and not stores:
             return jsonify({"ok":False,"error":"Email ID is not mapped to any shop."}),404
+        if store and store not in stores and not session.get("is_admin"):
+            return jsonify({"ok":False,"error":"This email is not mapped to the selected shop."}),403
 
         available=[]
         master_skus=[]
@@ -1185,6 +1207,7 @@ INWARD_EXCEL_URL = os.getenv("INWARD_EXCEL_URL", "").strip()
 INWARD_SHEET = os.getenv("INWARD_SHEET", "").strip()
 INWARD_CACHE_SECONDS = int(os.getenv("INWARD_CACHE_SECONDS", "60"))
 INWARD_SUBMISSION_API_URL = os.getenv("INWARD_SUBMISSION_API_URL", "").strip()
+INWARD_ENABLED = os.getenv("INWARD_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 # Exact columns the Entry page / variance CSV exposes.
 # Only these six source columns are exposed by Inward Validation / variance CSV.
@@ -1442,6 +1465,8 @@ def _inward_labels(mode):
 @app.post("/api/inward/sync")
 @require_access("stock_entry")
 def inward_sync():
+    if not INWARD_ENABLED:
+        return jsonify({"ok": False, "error": "Inward Validation is currently disabled."}), 404
     """Force-refresh the SharePoint/OneDrive inward Excel cache.
 
     This is intentionally separate from /api/inward/fetch so users can
@@ -1472,6 +1497,8 @@ def inward_sync():
 @app.get("/api/inward/fetch")
 @require_access("stock_entry")
 def inward_fetch():
+    if not INWARD_ENABLED:
+        return jsonify({"ok": False, "error": "Inward Validation is currently disabled."}), 404
     try:
         email = request.args.get("email", "").strip().lower(); po = request.args.get("po", "").strip()
         if not _enforce_identity(email): return jsonify({"ok": False, "error": "The requested email does not match the signed-in account."}), 403
@@ -1494,6 +1521,8 @@ def inward_fetch():
 @app.post("/api/inward/submit")
 @require_access("stock_entry")
 def inward_submit():
+    if not INWARD_ENABLED:
+        return jsonify({"ok": False, "error": "Inward Validation is currently disabled."}), 404
     try:
         p = request.get_json(force=True) or {}
         email = str(p.get("email", "")).strip().lower(); po = str(p.get("po", "")).strip()
@@ -1556,9 +1585,24 @@ def inward_submit():
 @require_access("stock_entry")
 def submissions():
     try:
-        if SUBMISSION_API_URL: return jsonify(remote_request("GET") or {})
-        return jsonify({"ok":True,"records":json_records(load_local_submissions())})
-    except Exception as e: return jsonify({"ok":False,"error":str(e)}),500
+        if session.get("is_admin"):
+            if SUBMISSION_API_URL: return jsonify(remote_request("GET") or {})
+            return jsonify({"ok":True,"records":json_records(load_local_submissions())})
+        email = str(session.get("user_email", "")).strip().lower()
+        mp = load_mapping(False)
+        mapped = set(mp.loc[mp["Email ID"].astype(str).str.lower() == email, "Store Name"].astype(str).str.strip())
+        if not mapped: return jsonify({"ok": True, "records": []})
+        df = load_submissions_live()
+        if df is None or df.empty: return jsonify({"ok": True, "records": []})
+        rename = {"store":"store_name", "Store Name":"store_name", "Shop Name":"store_name", "Email":"email", "Email ID":"email", "Submitted By":"email"}
+        df = df.rename(columns={c: rename.get(c,c) for c in df.columns}).copy()
+        if "store_name" not in df.columns: return jsonify({"ok": True, "records": []})
+        df["store_name"] = df["store_name"].fillna("").astype(str).str.strip()
+        df = df[df["store_name"].isin(mapped)].copy()
+        return jsonify({"ok": True, "records": json_records(df)})
+    except Exception:
+        return jsonify({"ok":False,"error":"Could not load submissions."}),500
+
 
 @app.get("/api/last-submissions")
 @require_access("stock_entry")

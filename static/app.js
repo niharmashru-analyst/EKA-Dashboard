@@ -47,9 +47,106 @@ function perfDetailTooltip(x){
     `<br>L3M Avg: ${qty(x['L3M Avg Qty'])}`+
     `<br>Stock: ${qty(x.Stock)}`;
 }
-function chart(id,opt,clickFn){let e=document.getElementById(id);if(!e)return;try{let old=echarts.getInstanceByDom(e);if(old)old.dispose();let c=echarts.init(e);c.setOption(opt,true);c.resize();if(clickFn)c.on('click',clickFn);charts.push(c)}catch(err){e.innerHTML='<div class="empty">Chart could not render.</div>'}}
-const palette=['#ff2b8a','#2f63e6','#ff72b4','#8b8b8b','#ffffff','#6f96ff','#cfcfd4','#ff5b6e'];
-const base={color:['#ff2b8a','#2f63e6','#ff72b4','#ffffff','#8b8b8b','#6f96ff','#cfcfd4','#ff5b6e'],backgroundColor:'transparent',textStyle:{fontFamily:'Manrope',color:'#f7f7f7'},tooltip:{trigger:'axis',backgroundColor:'#111',borderColor:'#303030',textStyle:{color:'#fff'}},grid:{left:55,right:45,top:70,bottom:65,containLabel:true},axisLabel:{color:'#8b8b8b',fontSize:11},splitLine:{lineStyle:{color:'#252525'}}};
+function chart(id,opt,clickFn){
+  let e=document.getElementById(id);
+  if(!e)return;
+  try{
+    let old=echarts.getInstanceByDom(e);
+    if(old)old.dispose();
+    let c=echarts.init(e,null,{renderer:'canvas'});
+    const calm=JSON.parse(JSON.stringify(opt||{}));
+    const series=Array.isArray(calm.series)?calm.series:[];
+    const semantic=['#d7659b','#8f949d','#7186a6','#7c9d8a','#a77b83','#b2a4b5'];
+    let colorIndex=0;
+
+    calm.color=semantic;
+    calm.backgroundColor='transparent';
+    calm.animationDuration=420;
+    calm.animationDurationUpdate=260;
+    calm.textStyle={...(calm.textStyle||{}),fontFamily:'Manrope',color:'#d2d2d7'};
+    calm.tooltip={
+      ...(calm.tooltip||{}),
+      backgroundColor:'#111214',
+      borderColor:'#292a2e',
+      borderWidth:1,
+      padding:[9,11],
+      textStyle:{color:'#e8e8eb',fontSize:11},
+      extraCssText:'box-shadow:0 8px 24px rgba(0,0,0,.28);border-radius:8px;'
+    };
+    calm.grid={
+      left:55,right:35,top:52,bottom:58,containLabel:true,
+      ...(calm.grid||{})
+    };
+    calm.xAxis=Array.isArray(calm.xAxis)?calm.xAxis:calm.xAxis?[calm.xAxis]:undefined;
+    calm.yAxis=Array.isArray(calm.yAxis)?calm.yAxis:calm.yAxis?[calm.yAxis]:undefined;
+
+    const softenAxis=ax=>{
+      if(!ax)return;
+      ax.axisLabel={color:'#85858e',fontSize:10,...(ax.axisLabel||{})};
+      ax.axisLine={lineStyle:{color:'#2a2b2f',width:1},...(ax.axisLine||{})};
+      ax.axisTick={show:false,...(ax.axisTick||{})};
+      ax.splitLine={show:false,...(ax.splitLine||{})};
+      if(ax.splitLine && ax.splitLine.show!==false){
+        ax.splitLine.lineStyle={color:'#1d1e21',width:1,...(ax.splitLine.lineStyle||{})};
+      }
+    };
+    (calm.xAxis||[]).forEach(softenAxis);
+    (calm.yAxis||[]).forEach(softenAxis);
+
+    series.forEach((s,i)=>{
+      const isBar=s.type==='bar', isLine=s.type==='line', isPie=s.type==='pie';
+      const fallback=semantic[colorIndex++%semantic.length];
+      s.itemStyle={...(s.itemStyle||{})};
+      if(!s.itemStyle.color) s.itemStyle.color=fallback;
+      if(isBar){
+        s.itemStyle.opacity=s.itemStyle.opacity??0.86;
+        s.itemStyle.borderRadius=s.itemStyle.borderRadius??[4,4,0,0];
+        s.barMaxWidth=s.barMaxWidth??30;
+        s.barGap=s.barGap??'28%';
+      }
+      if(isLine){
+        s.lineStyle={width:2,color:s.lineStyle?.color||fallback,...(s.lineStyle||{})};
+        s.symbol=s.symbol||'circle';
+        s.symbolSize=s.symbolSize??5;
+        s.showSymbol=s.showSymbol??true;
+      }
+      if(isPie){
+        s.itemStyle.borderColor='#0d0d0f';
+        s.itemStyle.borderWidth=2;
+        s.itemStyle.opacity=s.itemStyle.opacity??0.9;
+        s.label={fontSize:10,color:'#bdbdc4',...(s.label||{})};
+        s.labelLine={lineStyle:{color:'#45464c',width:1},...(s.labelLine||{})};
+      }
+      if(s.label){
+        s.label={fontSize:9,color:'#a7a7af',fontWeight:400,...s.label};
+      }
+    });
+    calm.series=series;
+    c.setOption(calm,true);
+    c.resize();
+    if(clickFn)c.on('click',clickFn);
+    charts.push(c);
+  }catch(err){
+    e.innerHTML='<div class="empty">Chart could not render.</div>';
+  }
+}
+const palette=['#d7659b','#8f949d','#7186a6','#7c9d8a','#a77b83','#b2a4b5'];
+const base={
+  color:palette,
+  backgroundColor:'transparent',
+  textStyle:{fontFamily:'Manrope',color:'#d2d2d7'},
+  tooltip:{
+    trigger:'axis',
+    backgroundColor:'#111214',
+    borderColor:'#292a2e',
+    borderWidth:1,
+    textStyle:{color:'#e8e8eb',fontSize:11},
+    padding:[9,11]
+  },
+  grid:{left:55,right:35,top:52,bottom:58,containLabel:true},
+  axisLabel:{color:'#85858e',fontSize:10},
+  splitLine:{lineStyle:{color:'#1d1e21',width:1}}
+};
 function apply(){
   let q=(filters.__q||'').toLowerCase();
   const selectedSkus=new Set(filters[SKU_FILTER_KEY]||[]);
@@ -116,7 +213,10 @@ function renderFilters(){
   document.getElementById('clear').onclick=e=>{e.preventDefault();e.stopPropagation();filters={};document.querySelectorAll('.multi-option input[type=checkbox]').forEach(b=>b.checked=false);render()};
 }
 document.addEventListener('click',()=>document.querySelectorAll('.multi.open').forEach(x=>x.classList.remove('open')));
-function getCols(id,baseCols){try{let x=JSON.parse(localStorage.getItem(COLS_VERSION+'_cols_'+id)||'null');if(Array.isArray(x))return x.filter(c=>baseCols.includes(c)).concat(baseCols.filter(c=>!x.includes(c)))}catch(_){}return baseCols}
+function safeStorageGet(k){try{return localStorage.getItem(k)}catch(_){return null}}
+function safeStorageSet(k,v){try{localStorage.setItem(k,v)}catch(_){}}
+function safeStorageRemove(k){try{localStorage.removeItem(k)}catch(_){}}
+function getCols(id,baseCols){try{let x=JSON.parse(safeStorageGet(COLS_VERSION+'_cols_'+id)||'null');if(Array.isArray(x))return x.filter(c=>baseCols.includes(c)).concat(baseCols.filter(c=>!x.includes(c)))}catch(_){}return baseCols}
 function columnChooser(id,cols){return `<div class="column-picker hidden" id="picker-${esc(id)}"><div class="column-picker-head"><b>Change column sequence</b><button class="picker-close" data-close-picker="${esc(id)}">✕</button></div><div id="picker-list-${esc(id)}">${cols.map((c,i)=>`<div class="column-item" draggable="true" data-col="${esc(c)}"><span class="column-drag">☷</span><span>${esc(c)}</span><span><button data-up="${esc(c)}" ${i?'':'disabled'}>▲</button><button data-down="${esc(c)}" ${i<cols.length-1?'':'disabled'}>▼</button></span></div>`).join('')}</div><div class="column-picker-foot"><button class="btn small" data-save-cols="${esc(id)}">Apply</button><button class="btn secondary small" data-reset-cols="${esc(id)}">Reset</button></div></div>`}
 function table(rows,cols,id,limit=250,rowClickCol=null){
   cols=getCols(id,cols);
@@ -133,7 +233,7 @@ document.addEventListener('dragstart',e=>{const item=e.target.closest('.column-i
 document.addEventListener('dragend',e=>{e.target.closest('.column-item')?.classList.remove('dragging');});
 document.addEventListener('dragover',e=>{const item=e.target.closest('.column-item');const list=e.target.closest('[id^="picker-list-"]');if(!item||!list)return;e.preventDefault();const dragging=list.querySelector('.column-item.dragging');if(!dragging||dragging===item)return;const r=item.getBoundingClientRect();list.insertBefore(dragging,e.clientY<r.top+r.height/2?item:item.nextSibling);});
 
-document.addEventListener('click',e=>{let o=e.target.closest('[data-open-picker]');if(o){document.querySelectorAll('.column-picker').forEach(x=>x.classList.add('hidden'));document.getElementById('picker-'+o.dataset.openPicker)?.classList.remove('hidden')}let close=e.target.closest('[data-close-picker]');if(close)document.getElementById('picker-'+close.dataset.closePicker)?.classList.add('hidden');let up=e.target.closest('[data-up]'),down=e.target.closest('[data-down]');if(up||down){let p=(up||down).closest('.column-picker'),list=[...p.querySelectorAll('.column-item')],i=list.findIndex(x=>x.dataset.col===(up||down).dataset[up?'up':'down']);let j=up?i-1:i+1;if(i<0||j<0||j>=list.length)return;list[j].parentNode.insertBefore(list[i],up?list[j]:list[j].nextSibling);[...p.querySelectorAll('button[data-up],button[data-down]')].forEach(b=>{let items=[...p.querySelectorAll('.column-item')],ix=items.findIndex(x=>x.dataset.col===b.dataset.up||x.dataset.col===b.dataset.down);b.disabled=b.hasAttribute('data-up')?ix===0:ix===items.length-1})}let save=e.target.closest('[data-save-cols]');if(save){let p=document.getElementById('picker-'+save.dataset.saveCols),arr=[...p.querySelectorAll('.column-item')].map(x=>x.dataset.col);localStorage.setItem(COLS_VERSION+'_cols_'+save.dataset.saveCols,JSON.stringify(arr));p.classList.add('hidden');render()}let reset=e.target.closest('[data-reset-cols]');if(reset){localStorage.removeItem(COLS_VERSION+'_cols_'+reset.dataset.resetCols);render()}});
+document.addEventListener('click',e=>{const pg=e.target.closest('[data-table-page]');if(pg&&!pg.disabled){const id=pg.dataset.tablePage;const dir=Number(pg.dataset.pageDir||0);const key='__tablePage_'+id;window[key]=Math.max(0,Number(window[key]||0)+dir);render();return;}let o=e.target.closest('[data-open-picker]');if(o){document.querySelectorAll('.column-picker').forEach(x=>x.classList.add('hidden'));document.getElementById('picker-'+o.dataset.openPicker)?.classList.remove('hidden')}let close=e.target.closest('[data-close-picker]');if(close)document.getElementById('picker-'+close.dataset.closePicker)?.classList.add('hidden');let up=e.target.closest('[data-up]'),down=e.target.closest('[data-down]');if(up||down){let p=(up||down).closest('.column-picker'),list=[...p.querySelectorAll('.column-item')],i=list.findIndex(x=>x.dataset.col===(up||down).dataset[up?'up':'down']);let j=up?i-1:i+1;if(i<0||j<0||j>=list.length)return;list[j].parentNode.insertBefore(list[i],up?list[j]:list[j].nextSibling);[...p.querySelectorAll('button[data-up],button[data-down]')].forEach(b=>{let items=[...p.querySelectorAll('.column-item')],ix=items.findIndex(x=>x.dataset.col===b.dataset.up||x.dataset.col===b.dataset.down);b.disabled=b.hasAttribute('data-up')?ix===0:ix===items.length-1})}let save=e.target.closest('[data-save-cols]');if(save){let p=document.getElementById('picker-'+save.dataset.saveCols),arr=[...p.querySelectorAll('.column-item')].map(x=>x.dataset.col);safeStorageSet(COLS_VERSION+'_cols_'+save.dataset.saveCols,JSON.stringify(arr));p.classList.add('hidden');render()}let reset=e.target.closest('[data-reset-cols]');if(reset){safeStorageRemove(COLS_VERSION+'_cols_'+reset.dataset.resetCols);render()}});
 function chartFormat(v,mode){return mode==='value'?moneyL(v):qty(v)}
 function paretoSummary(d){let m={};d.forEach(r=>{let p=normalizePareto(r.Pareto);m[p]??={stockQty:0,stockVal:0,l3mQty:0,l3mVal:0,cmQty:0,cmVal:0,lyQty:0,lyVal:0};let g=m[p];g.stockQty+=+r.Stock||0;g.stockVal+=+r['Total MRP Value']||0;g.l3mQty+=+r['L3M Avg Qty']||0;g.l3mVal+=+r['L3M Avg Value']||0;g.cmQty+=+r['Current Month Qty']||0;g.cmVal+=+r['Current Month Value']||0;g.lyQty+=+r['LY Qty']||0;g.lyVal+=+r['LY Value']||0});return m}
 function overview(){paretoMode=viewMode;let d=FILTERED,byType={};d.forEach(r=>{let t=canonicalType(r.Type);byType[t]??={ly:0,l3m:0,cm:0,lyVal:0,l3mVal:0,cmVal:0};byType[t].ly+=+r['LY Qty']||0;byType[t].l3m+=+r['L3M Avg Qty']||0;byType[t].cm+=+r['Current Month Qty']||0;byType[t].lyVal+=+r['LY Value']||0;byType[t].l3mVal+=+r['L3M Avg Value']||0;byType[t].cmVal+=+r['Current Month Value']||0});let types=['EBO','Kiosk','Airport'];types.forEach(t=>{byType[t]??={ly:0,l3m:0,cm:0,lyVal:0,l3mVal:0,cmVal:0}});let p=paretoSummary(d),cats=sortedParetoCats(p),overviewSkuRows=aggregateSku(d),overviewNc=nodCounts(overviewSkuRows),overviewNod=totalNod(overviewSkuRows);document.getElementById('app').innerHTML=`<div class="kpi-section"><div class="kpi-row-label">${viewMode==='value'?'VALUE':'QUANTITY'}</div><div class="kpis kpis-4">${kpi(metricLabel('Stock'),metricFmt(sum(d,valueField('Stock'))),'Current stock')}${kpi(metricLabel('LY Qty'),metricFmt(sum(d,valueField('LY Qty'))),'Last year')}${kpi(metricLabel('L3M Avg Qty'),metricFmt(sum(d,valueField('L3M Avg Qty'))),'Run rate')}${kpi(metricLabel('Current Month Qty'),metricFmt(sum(d,valueField('Current Month Qty'))),'Current month')}</div><div class="kpi-row-label">NOD DETAILS</div><div class="kpis kpis-6">${kpi('NOD',qty(overviewNod)+' Days','Overall stock cover')}${kpi('NOD <15',qty(overviewNc.lt15),'SKU count','bad')}${kpi('NOD 15–30',qty(overviewNc.n15_30),'SKU count')}${kpi('NOD 31–60',qty(overviewNc.n31_60),'SKU count')}${kpi('NOD >60',qty(overviewNc.gt60),'SKU count','bad')}${kpi('Dead Stock SKUs',qty(overviewSkuRows.filter(r=>r['Stock Health']==='Dead Stock').length),'Stock but no L3M movement','bad')}</div></div><div class="grid2"><div class="card"><div class="card-title">Pareto Contribution — ${viewMode==='value'?'Value':'Quantity'}</div><div id="paretoChart" class="chart"></div></div><div class="card"><div class="card-title">Stock vs L3M Average — ${viewMode==='value'?'Value':'Quantity'}</div><div id="stockSalesChart" class="chart"></div></div></div><div class="card"><div class="card-title">Type-wise Sales — ${viewMode==='value'?'Value':'Quantity'}</div><div id="typeQtyChart" class="chart"></div></div>`;let total=p?Object.values(p).reduce((a,x)=>a+(paretoMode==='value'?x.stockVal:x.stockQty),0):0;chart('paretoChart',{...base,tooltip:{trigger:'item',formatter:q=>{let g=p[q.name]||{};let lines=[`<b>${esc(q.name)}</b>`,`Contribution: ${pct1(q.percent)}`];if(paretoMode==='value')lines.push(`Stock Value: ${moneyL(g.stockVal)}`,`L3M Avg Value: ${moneyL(g.l3mVal)}`,`Current Month Value: ${moneyL(g.cmVal)}`,`LY Value: ${moneyL(g.lyVal)}`);else lines.push(`Stock Qty: ${qty(g.stockQty)}`,`L3M Avg Qty: ${qty(g.l3mQty)}`,`Current Month Qty: ${qty(g.cmQty)}`,`LY Qty: ${qty(g.lyQty)}`);return lines.join('<br>')},},series:[{type:'pie',radius:['42%','68%'],data:cats.map(k=>({name:k,value:paretoMode==='value'?p[k].stockVal:p[k].stockQty})),label:{show:true,formatter:q=>`${q.name}\n${paretoMode==='value'?moneyL(q.value):qty(q.value)} (${pct1(q.percent)})`},labelLine:{show:true}}]});let stockSales= cats.map(k=>p[k]);chart('stockSalesChart',{...base,legend:{show:true,top:5},grid:{...base.grid,bottom:cats.length>6?95:75},dataZoom:cats.length>8?[{type:'inside'},{type:'slider',bottom:8,height:16}]:undefined,tooltip:{trigger:'axis',axisPointer:{type:'shadow'},backgroundColor:'#111',borderColor:'#3a3a3a',textStyle:{color:'#fff'},formatter:ps=>{let i=ps[0]?.dataIndex??0,name=cats[i],g=p[name]||{};let lines=[`<b>${esc(name)}</b>`];if(paretoMode==='value')lines.push(`Stock Value: ${moneyL(g.stockVal)}`,`L3M Avg Value: ${moneyL(g.l3mVal)}`);else lines.push(`Stock Qty: ${qty(g.stockQty)}`,`L3M Avg Qty: ${qty(g.l3mQty)}`);return lines.join('<br>')}},xAxis:{type:'category',data:cats,axisLabel:{rotate:cats.length>5?32:0,interval:0,fontSize:10,formatter:v=>String(v).length>14?String(v).slice(0,14)+'…':v}},yAxis:{type:'value',axisLabel:{formatter:v=>chartFormat(v,paretoMode)}},series:[{name:paretoMode==='value'?'Stock Value':'Stock Qty',type:'bar',data:stockSales.map(x=>paretoMode==='value'?x.stockVal:x.stockQty),barMaxWidth:28,label:{show:false}},{name:paretoMode==='value'?'L3M Avg Value':'L3M Avg Qty',type:'bar',data:stockSales.map(x=>paretoMode==='value'?x.l3mVal:x.l3mQty),barMaxWidth:28,label:{show:false}}]});chart('typeQtyChart',{...base,legend:{show:true,top:5},xAxis:{type:'category',data:types},yAxis:{type:'value',axisLabel:{formatter:v=>chartFormat(v,viewMode)}},series:[{name:viewMode==='value'?'LY Value':'LY Qty',type:'bar',data:types.map(t=>viewMode==='value'?byType[t].lyVal:byType[t].ly),label:{show:true,position:'top',formatter:q=>metricFmt(q.value)}},{name:viewMode==='value'?'L3M Avg Value':'L3M Avg Qty',type:'bar',data:types.map(t=>viewMode==='value'?byType[t].l3mVal:byType[t].l3m),label:{show:true,position:'top',formatter:q=>metricFmt(q.value)}},{name:viewMode==='value'?'CM Value':'CM Qty',type:'bar',data:types.map(t=>viewMode==='value'?byType[t].cmVal:byType[t].cm),label:{show:true,position:'top',formatter:q=>metricFmt(q.value)}}]});chart('typeValueChart',{...base,legend:{show:true,top:5},xAxis:{type:'category',data:types},yAxis:{type:'value',axisLabel:{formatter:moneyL}},series:[{name:'LY Value',type:'bar',data:types.map(t=>byType[t].lyVal),label:{show:true,position:'top',formatter:q=>moneyL(q.value)}},{name:'L3M Avg Value',type:'bar',data:types.map(t=>byType[t].l3mVal),label:{show:true,position:'top',formatter:q=>moneyL(q.value)}},{name:'CM Value',type:'bar',data:types.map(t=>byType[t].cmVal),label:{show:true,position:'top',formatter:q=>moneyL(q.value)}}]})}
@@ -293,7 +393,7 @@ function products(){
       <td class="num">${qty(x.Stock)}</td>
     </tr>`).join('');
   }
-  if(skuChartRows.length)chart('skuPerfRankChart',{...base,grid:{left:95,right:85,top:20,bottom:20,containLabel:true},tooltip:{trigger:'item',formatter:q=>perfDetailTooltip(q.data?.sku)},xAxis:{type:'value',axisLabel:{formatter:v=>pct1(v)}},yAxis:{type:'category',data:skuChartRows.map(x=>x['Product Name']),axisLabel:{fontSize:9,formatter:v=>String(v).length>28?String(v).slice(0,28)+'…':v}},series:[{name:'Growth %',type:'bar',data:skuChartRows.map(x=>({value:+x['Growth %'].toFixed(1),itemStyle:{color:x['Growth %']>=0?'#0F766E':'#DC2626'},sku:x})),label:{show:true,position:'right',formatter:q=>pct1(q.value)}}]});
+  if(skuChartRows.length)chart('skuPerfRankChart',{...base,grid:{left:95,right:85,top:20,bottom:20,containLabel:true},tooltip:{trigger:'item',formatter:q=>perfDetailTooltip(q.data?.sku)},xAxis:{type:'value',axisLabel:{formatter:v=>pct1(v)}},yAxis:{type:'category',data:skuChartRows.map(x=>x['Product Name']),axisLabel:{fontSize:9,formatter:v=>String(v).length>28?String(v).slice(0,28)+'…':v}},series:[{name:'Growth %',type:'bar',data:skuChartRows.map(x=>({value:+x['Growth %'].toFixed(1),itemStyle:{color:x['Growth %']>=0?'#7c9d8a':'#a77b83'},sku:x})),label:{show:true,position:'right',formatter:q=>pct1(q.value)}}]});
   else document.getElementById('skuPerfRankChart').innerHTML='<div class="empty">No SKUs with LY sales to calculate Growth yet.</div>';
   document.getElementById('skuPerfTop')?.addEventListener('click',()=>{skuPerfView='top';products()});
   document.getElementById('skuPerfWorst')?.addEventListener('click',()=>{skuPerfView='worst';products()});
@@ -346,7 +446,7 @@ function stores(){
     </tr>`).join('');
   }
   const rankChartRows=storePerfView==='worst'?validPerf.slice(-10):validPerf.slice(0,10).reverse();
-  if(rankChartRows.length)chart('storePerfRankChart',{...base,grid:{left:55,right:85,top:20,bottom:20,containLabel:true},tooltip:{trigger:'item',formatter:q=>perfDetailTooltip(q.data?.store)},xAxis:{type:'value',axisLabel:{formatter:v=>pct1(v)}},yAxis:{type:'category',data:rankChartRows.map(x=>x['Store Name']),axisLabel:{fontSize:9}},series:[{name:'Growth %',type:'bar',data:rankChartRows.map(x=>({value:+x['Growth %'].toFixed(1),itemStyle:{color:x['Growth %']>=0?'#0F766E':'#DC2626'},store:x})),label:{show:true,position:'right',formatter:q=>pct1(q.value)}}]});
+  if(rankChartRows.length)chart('storePerfRankChart',{...base,grid:{left:55,right:85,top:20,bottom:20,containLabel:true},tooltip:{trigger:'item',formatter:q=>perfDetailTooltip(q.data?.store)},xAxis:{type:'value',axisLabel:{formatter:v=>pct1(v)}},yAxis:{type:'category',data:rankChartRows.map(x=>x['Store Name']),axisLabel:{fontSize:9}},series:[{name:'Growth %',type:'bar',data:rankChartRows.map(x=>({value:+x['Growth %'].toFixed(1),itemStyle:{color:x['Growth %']>=0?'#7c9d8a':'#a77b83'},store:x})),label:{show:true,position:'right',formatter:q=>pct1(q.value)}}]});
   else document.getElementById('storePerfRankChart').innerHTML='<div class="empty">No stores with LY sales to calculate Growth yet.</div>';
   document.getElementById('spTop')?.addEventListener('click',()=>{storePerfView='top';stores()});
   document.getElementById('spWorst')?.addEventListener('click',()=>{storePerfView='worst';stores()});
@@ -380,17 +480,17 @@ function variance(){
   document.getElementById('issueOnly').onchange=e=>{varianceIssueOnly=e.target.checked;variance()};
   document.getElementById('vCsv').onclick=()=>location.href='/api/variance-export';
 
-  const base={tooltip:{trigger:'axis'},grid:{left:70,right:25,top:25,bottom:55},xAxis:{type:'value',axisLabel:{formatter:qty}},yAxis:{type:'category'}};
+  const varianceBase={...base,grid:{left:70,right:25,top:25,bottom:55},xAxis:{type:'value',axisLabel:{formatter:qty}},yAxis:{type:'category'},tooltip:{trigger:'axis',backgroundColor:'#111214',borderColor:'#292a2e',textStyle:{color:'#e8e8eb',fontSize:11}}};
   let sm={};rows.forEach(r=>{sm[r['Store Name']]=(sm[r['Store Name']]||0)+Math.abs(+r['Stock Variance Qty']||0)});
   let se=Object.entries(sm).sort((a,b)=>b[1]-a[1]).slice(0,10).reverse();
-  if(se.length)chart('stockVarianceShopChart',{...base,yAxis:{type:'category',data:se.map(x=>x[0]),axisLabel:{fontSize:9}},series:[{name:'Stock Variance Qty',type:'bar',data:se.map(x=>x[1]),label:{show:true,position:'right',formatter:q=>qty(q.value)}}]});else document.getElementById('stockVarianceShopChart').innerHTML='<div class="empty">No stock variance found.</div>';
+  if(se.length)chart('stockVarianceShopChart',{...varianceBase,yAxis:{type:'category',data:se.map(x=>x[0]),axisLabel:{fontSize:9}},series:[{name:'Stock Variance Qty',type:'bar',data:se.map(x=>x[1]),label:{show:true,position:'right',formatter:q=>qty(q.value)}}]});else document.getElementById('stockVarianceShopChart').innerHTML='<div class="empty">No stock variance found.</div>';
   let sm2={};rows.filter(r=>r['Live Submission']).forEach(r=>{sm2[r['Store Name']]=(sm2[r['Store Name']]||0)+Math.abs(+r['Difference Qty']||0)});
   let se2=Object.entries(sm2).sort((a,b)=>b[1]-a[1]).slice(0,10).reverse();
-  if(se2.length)chart('varianceShopChart',{...base,yAxis:{type:'category',data:se2.map(x=>x[0]),axisLabel:{fontSize:9}},series:[{name:'Physical Variance Qty',type:'bar',data:se2.map(x=>x[1]),label:{show:true,position:'right',formatter:q=>qty(q.value)}}]});else document.getElementById('varianceShopChart').innerHTML='<div class="empty">No physical variance submitted yet.</div>';
+  if(se2.length)chart('varianceShopChart',{...varianceBase,yAxis:{type:'category',data:se2.map(x=>x[0]),axisLabel:{fontSize:9}},series:[{name:'Physical Variance Qty',type:'bar',data:se2.map(x=>x[1]),label:{show:true,position:'right',formatter:q=>qty(q.value)}}]});else document.getElementById('varianceShopChart').innerHTML='<div class="empty">No physical variance submitted yet.</div>';
   let vs=rows.filter(r=>Math.abs(+r['Stock Variance Qty']||0)>0 || (r['Live Submission']&&Math.abs(+r['Difference Qty']||0)>0)).map(r=>({n:r['Product Name'],v:Math.max(Math.abs(+r['Stock Variance Qty']||0),Math.abs(+r['Difference Qty']||0))})).sort((a,b)=>b.v-a.v).slice(0,10).reverse();
-  if(vs.length)chart('varianceSkuChart',{...base,yAxis:{type:'category',data:vs.map(x=>x.n),axisLabel:{fontSize:9}},series:[{name:'Variance Qty',type:'bar',data:vs.map(x=>x.v),label:{show:true,position:'right',formatter:q=>qty(q.value)}}]});else document.getElementById('varianceSkuChart').innerHTML='<div class="empty">No variance found.</div>';
+  if(vs.length)chart('varianceSkuChart',{...varianceBase,yAxis:{type:'category',data:vs.map(x=>x.n),axisLabel:{fontSize:9}},series:[{name:'Variance Qty',type:'bar',data:vs.map(x=>x.v),label:{show:true,position:'right',formatter:q=>qty(q.value)}}]});else document.getElementById('varianceSkuChart').innerHTML='<div class="empty">No variance found.</div>';
   let shortage=rows.filter(r=>(+r['Stock Variance Qty']||0)<0 || (r['Live Submission']&&(+r['Difference Qty']||0)<0)).length,excess=rows.filter(r=>(+r['Stock Variance Qty']||0)>0 || (r['Live Submission']&&(+r['Difference Qty']||0)>0)).length;
-  chart('varianceDirectionChart',{...base,xAxis:{type:'category',data:['Shortage','Excess']},yAxis:{type:'value',axisLabel:{formatter:qty}},series:[{name:'Rows',type:'bar',data:[shortage,excess],label:{show:true,position:'top',formatter:q=>qty(q.value)}}]});
+  chart('varianceDirectionChart',{...varianceBase,xAxis:{type:'category',data:['Shortage','Excess']},yAxis:{type:'value',axisLabel:{formatter:qty}},series:[{name:'Rows',type:'bar',data:[shortage,excess],label:{show:true,position:'top',formatter:q=>qty(q.value)}}]});
 }
 
 function render(){syncViewToggle();apply();charts.forEach(c=>c.dispose());charts=[];document.getElementById('pageTitle').innerHTML=page==='variance'?'Variance Analysis <span class="variance-page-badge">BETA</span>':{overview:'Overview',products:'SKU Explorer',stores:'Store Analysis',table:'Data Table'}[page];document.getElementById('filterBar').style.display=page==='variance'?'none':'';if(page==='overview')overview();else if(page==='products')products();else if(page==='stores')stores();else if(page==='table')dataTable();else variance()}
