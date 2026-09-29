@@ -10,12 +10,14 @@ Example:
     "user@company.com": {
       "name": "User Name",
       "password": "UserPassword",
-      "access": ["stock_entry"]
+      "access": ["stock_entry"],
+      "status": "Active"
     },
     "manager@company.com": {
       "name": "Manager",
       "password": "ManagerPassword",
-      "access": ["stock_entry", "dashboard"]
+      "access": ["stock_entry", "dashboard"],
+      "status": "Active"
     }
   }
 }
@@ -40,3 +42,42 @@ Keep using the existing `data/mapping.json` for email-to-shop mapping. The signe
 
 ## Important
 The included sample user password is `ChangeMe@2026`. Change it before production. If the repository is public, do not store real user passwords in plain text; use a private repository or switch entries to `password_hash`.
+
+
+## Render environment variables
+
+For the CORMATE login/admin system, set these on Render:
+
+- `SECRET_KEY` — **required for production**. Use a long random value.
+- `ADMIN_EMAIL` — **recommended**; defaults to `admin@cormate.com` if omitted.
+- `ADMIN_PASSWORD` — **required if you want the separate Admin login**.
+
+The following are conditional and are not required by access control itself:
+
+- `GEMINI_API_KEY` — required only for the Analyst/Gemini chat feature.
+- `MAPPING_JSON_URL` — optional; otherwise the app reads `data/mapping.json`.
+- `USERS_JSON_PATH` — optional; otherwise the app reads `data/users.json`.
+
+Existing Excel/submission/variance environment variables used by the dashboard remain as configured in your current Render service.
+
+### Mapping JSON formats
+
+The app accepts both the older `users` format and the VBA-generated `mappings` format:
+
+```json
+{
+  "mappings": {
+    "user@company.com": {
+      "shops": [
+        {
+          "code": "S001",
+          "name": "Mumbai Airport",
+          "status": "Active"
+        }
+      ]
+    }
+  }
+}
+```
+
+Inactive shops are ignored by the mapping loader.

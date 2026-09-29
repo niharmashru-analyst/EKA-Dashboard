@@ -1,32 +1,25 @@
 {
-  "mappings": {
-    "nihar.mashru@reneecosmetics.in": {
-      "shops": [
-        {
-          "code": "S001",
-          "name": "Srinagar Airport",
-          "status": "Active"
-        }
-      ]
-    },
-    "nihar@reneecosmetics.in": {
-      "shops": [
-        {
-          "code": "S002",
-          "name": "Mumbai Airport",
-          "status": "Active"
-        },
-        {
-          "code": "S002",
-          "name": "Srinagar Airport",
-          "status": "Active"
-        },
-        {
-          "code": "S002",
-          "name": "Chennai Airport",
-          "status": "Active"
-        }
-      ]
-    }
+  "users": {
+    "nihar.mashru@reneecosmetics.in": [
+      {
+        "store_code": "AP_J&K01",
+        "store_name": "Srinagar Airport",
+        "city": "Delhi",
+        "region": "North"
+      },
+      {
+        "store_code": "AP_MUM03",
+        "store_name": "Mumbai Airport",
+        "city": "Hyderabad",
+        "region": "South"
+      },
+      {
+        "store_code": "AP_CHEN01",
+        "store_name": "Chennai Airport",
+        "city": "Kolkata",
+        "region": "East"
+      }
+    ]
   }
 }
+

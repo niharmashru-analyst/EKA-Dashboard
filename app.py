@@ -184,10 +184,26 @@ def clean_json_map(payload):
 
     A simple email -> ["Store 1", "Store 2"] format is also accepted.
     """
-    users = payload.get("users", payload) if isinstance(payload, dict) else {}
+    if not isinstance(payload, dict):
+        raise RuntimeError("mapping.json must be a JSON object.")
+
+    # Accept both the older {"users": {...}} format and the VBA-generated
+    # {"mappings": {"email": {"shops": [...]}}} format.
+    if isinstance(payload.get("mappings"), dict):
+        users = payload.get("mappings", {})
+        normalized = {}
+        for raw_email, raw_value in users.items():
+            if isinstance(raw_value, dict) and "shops" in raw_value:
+                normalized[raw_email] = raw_value.get("shops", [])
+            else:
+                normalized[raw_email] = raw_value
+        users = normalized
+    else:
+        users = payload.get("users", payload)
+
     records = []
     if not isinstance(users, dict):
-        raise RuntimeError("mapping.json must contain a 'users' object.")
+        raise RuntimeError("mapping.json must contain an email-to-store object.")
 
     for raw_email, raw_stores in users.items():
         email = str(raw_email or "").strip().lower()
@@ -201,10 +217,13 @@ def clean_json_map(payload):
             if isinstance(shop, str):
                 store_name, store_code, city, region = shop.strip(), "", "", ""
             elif isinstance(shop, dict):
-                store_name = str(shop.get("store_name", shop.get("Store Name", shop.get("shop_name", shop.get("Shop Name", "")))) or "").strip()
-                store_code = str(shop.get("store_code", shop.get("Store Code", "")) or "").strip()
+                store_name = str(shop.get("store_name", shop.get("Store Name", shop.get("shop_name", shop.get("Shop Name", shop.get("name", ""))))) or "").strip()
+                store_code = str(shop.get("store_code", shop.get("Store Code", shop.get("code", ""))) or "").strip()
                 city = str(shop.get("city", shop.get("City", "")) or "").strip()
                 region = str(shop.get("region", shop.get("Region", "")) or "").strip()
+                status = str(shop.get("status", shop.get("Status", "Active")) or "Active").strip().lower()
+                if status not in {"active", "enabled"}:
+                    continue
             else:
                 continue
             if store_name:
@@ -672,47 +691,6 @@ def _ai_analyze_query(x, variance, view_mode, question):
     return result
 
 
-@app.post("/api/ai/chat")
-@require_access("dashboard")
-def ai_chat():
-    try:
-        if not GEMINI_API_KEY:
-            return jsonify({"ok":False,"error":"Gemini AI is not configured. Add GEMINI_API_KEY in Render Environment Variables."}),503
-        payload=request.get_json(silent=True) or {}
-        question=str(payload.get("question") or "").strip()
-        if not question:return jsonify({"ok":False,"error":"Please enter a question."}),400
-        if len(question)>1000:return jsonify({"ok":False,"error":"Question is too long (maximum 1000 characters)."}),400
-        stock=load_stock(False)
-        filtered=_ai_filter_stock(stock,payload)
-        try: variance=load_variance(False)
-        except Exception: variance=pd.DataFrame()
-        context=_ai_analyze_query(filtered,variance,str(payload.get("view_mode") or "qty"),question)
-        system=("You are Analyst inside a business analytics dashboard. "
-          "Answer ONLY from the authoritative Python analytics result supplied by the server. Never invent, estimate, recalculate, or substitute numbers. "
-          "The server has already performed aggregation, ranking, filtering, growth and NOD calculations. Treat those results as exact. "
-          "Growth is Current Month vs LY. NOD is days. Qty/Value mode must be respected; NOD always stays in days. "
-          "For strategy questions, first state the data facts, then give practical recommendations clearly labelled Recommendation. "
-          "For rankings, preserve the requested order and do not reorder unless the user asks. "
-          "For a specific SKU/store, discuss only evidence present in the result. "
-          "If the result is empty or insufficient, say exactly what data is missing. Do not answer unrelated questions. "
-          "Keep answers concise, structured, and business-friendly. If the user explicitly asks for Top 10 or 10 items and the server result contains 10 items, include all 10 items; do not stop early.")
-        user=("Question: "+question+"\n\nDashboard context (authoritative):\n"+json.dumps(context,ensure_ascii=False,separators=(",",":")))
-        url=f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
-        body={"system_instruction":{"parts":[{"text":system}]},"contents":[{"role":"user","parts":[{"text":user}]}],"generationConfig":{"temperature":0.2,"maxOutputTokens":2200}}
-        r=requests.post(url,json=body,timeout=45)
-        if r.status_code>=400:
-            try: detail=r.json().get("error",{}).get("message",r.text)
-            except Exception: detail=r.text
-            return jsonify({"ok":False,"error":"Gemini API error: "+str(detail)}),502
-        data=r.json(); text=""
-        for cand in data.get("candidates",[]):
-            for part in cand.get("content",{}).get("parts",[]):
-                if part.get("text"): text+=part["text"]
-        if not text:text="I couldn't generate an answer from the available dashboard data."
-        return jsonify({"ok":True,"answer":text,"view_mode":payload.get("view_mode") or "qty"})
-    except Exception as e:
-        return jsonify({"ok":False,"error":str(e)}),500
-
 # -----------------------------------------------------------------------------
 # CORMATE access control
 # -----------------------------------------------------------------------------
@@ -818,6 +796,10 @@ def login():
     if not rec or not _check_password(rec, password):
         return jsonify({"ok": False, "error": "Incorrect email or password."}), 401
 
+    status = str(rec.get("status", "Active")).strip().lower()
+    if status and status not in {"active", "enabled"}:
+        return jsonify({"ok": False, "error": "Your account is inactive. Please contact the administrator."}), 403
+
     access = rec.get("access", [])
     if isinstance(access, str):
         access = [access]
@@ -833,6 +815,47 @@ def login():
     session["is_admin"] = False
     session["access"] = access
     return jsonify({"ok": True, "redirect": _destination_for_access()})
+
+@app.post("/api/ai/chat")
+@require_access("dashboard")
+def ai_chat():
+    try:
+        if not GEMINI_API_KEY:
+            return jsonify({"ok":False,"error":"Gemini AI is not configured. Add GEMINI_API_KEY in Render Environment Variables."}),503
+        payload=request.get_json(silent=True) or {}
+        question=str(payload.get("question") or "").strip()
+        if not question:return jsonify({"ok":False,"error":"Please enter a question."}),400
+        if len(question)>1000:return jsonify({"ok":False,"error":"Question is too long (maximum 1000 characters)."}),400
+        stock=load_stock(False)
+        filtered=_ai_filter_stock(stock,payload)
+        try: variance=load_variance(False)
+        except Exception: variance=pd.DataFrame()
+        context=_ai_analyze_query(filtered,variance,str(payload.get("view_mode") or "qty"),question)
+        system=("You are Analyst inside a business analytics dashboard. "
+          "Answer ONLY from the authoritative Python analytics result supplied by the server. Never invent, estimate, recalculate, or substitute numbers. "
+          "The server has already performed aggregation, ranking, filtering, growth and NOD calculations. Treat those results as exact. "
+          "Growth is Current Month vs LY. NOD is days. Qty/Value mode must be respected; NOD always stays in days. "
+          "For strategy questions, first state the data facts, then give practical recommendations clearly labelled Recommendation. "
+          "For rankings, preserve the requested order and do not reorder unless the user asks. "
+          "For a specific SKU/store, discuss only evidence present in the result. "
+          "If the result is empty or insufficient, say exactly what data is missing. Do not answer unrelated questions. "
+          "Keep answers concise, structured, and business-friendly. If the user explicitly asks for Top 10 or 10 items and the server result contains 10 items, include all 10 items; do not stop early.")
+        user=("Question: "+question+"\n\nDashboard context (authoritative):\n"+json.dumps(context,ensure_ascii=False,separators=(",",":")))
+        url=f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+        body={"system_instruction":{"parts":[{"text":system}]},"contents":[{"role":"user","parts":[{"text":user}]}],"generationConfig":{"temperature":0.2,"maxOutputTokens":2200}}
+        r=requests.post(url,json=body,timeout=45)
+        if r.status_code>=400:
+            try: detail=r.json().get("error",{}).get("message",r.text)
+            except Exception: detail=r.text
+            return jsonify({"ok":False,"error":"Gemini API error: "+str(detail)}),502
+        data=r.json(); text=""
+        for cand in data.get("candidates",[]):
+            for part in cand.get("content",{}).get("parts",[]):
+                if part.get("text"): text+=part["text"]
+        if not text:text="I couldn't generate an answer from the available dashboard data."
+        return jsonify({"ok":True,"answer":text,"view_mode":payload.get("view_mode") or "qty"})
+    except Exception as e:
+        return jsonify({"ok":False,"error":str(e)}),500
 
 @app.get("/choose")
 def choose():

@@ -6,7 +6,8 @@
       "access": [
         "stock_entry",
         "dashboard"
-      ]
+      ],
+      "status": "Active"
     }
   }
 }
