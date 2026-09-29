@@ -568,3 +568,147 @@ tr:hover td{background:#151515!important}
   font-weight:650!important;
 }
 .chart{overflow:hidden}
+
+
+/* =========================================================
+   FINAL RENÉE FIELD ENTRY DARK THEME — overrides legacy white surfaces
+   ========================================================= */
+.entry-body .last-submission-panel{
+  background:#0f0f0f!important;
+  border:1px solid #292929!important;
+  color:#f7f7f7!important;
+  box-shadow:0 10px 30px rgba(0,0,0,.28)!important;
+}
+.entry-body .last-sub-head{
+  background:linear-gradient(180deg,#151515 0%,#111111 100%)!important;
+  border-bottom:1px solid #292929!important;
+  color:#f7f7f7!important;
+}
+.entry-body .last-sub-head b{color:#f7f7f7!important}
+.entry-body .last-sub-head span:not(.last-sub-refresh){color:#777780!important}
+.entry-body .last-sub-refresh{
+  background:rgba(66,211,146,.10)!important;
+  border:1px solid rgba(66,211,146,.18)!important;
+  color:#42d392!important;
+}
+.entry-body .last-sub-grid{background:#0f0f0f!important}
+.entry-body .last-sub-item{
+  background:#111111!important;
+  border:1px solid #292929!important;
+  color:#f7f7f7!important;
+}
+.entry-body .last-sub-item:hover{background:#151515!important;border-color:#3a3a3a!important}
+.entry-body .last-sub-item.active{
+  background:linear-gradient(145deg,rgba(255,43,138,.10),rgba(255,43,138,.035))!important;
+  border-color:rgba(255,43,138,.70)!important;
+  box-shadow:inset 3px 0 #ff2b8a!important;
+}
+.entry-body .last-sub-store{color:#f7f7f7!important}
+.entry-body .last-sub-time,.entry-body .last-sub-by{color:#777780!important}
+.entry-body .last-sub-meta span{
+  background:#f0f2f5!important;
+  color:#151515!important;
+  border:0!important;
+}
+.entry-body .last-submission-panel *{text-shadow:none!important}
+
+
+/* =========================================================
+   CORMATE / RENÉE — GLOBAL FINAL THEME AUDIT
+   Dark surfaces are enforced for every shared/entry component.
+   No legacy light Salesforce surfaces should leak into the UI.
+   ========================================================= */
+:root{
+  --accent:var(--c-pink)!important;
+  --text:var(--c-text)!important;
+  --text2:#d6d6dc!important;
+  --muted:var(--c-muted)!important;
+  --muted2:#73737d!important;
+  --line:var(--c-line)!important;
+  --panel:var(--c-card)!important;
+  --bg:var(--c-bg)!important;
+}
+
+/* Shared dashboard surfaces */
+body,main,.app-shell{background:var(--c-bg)!important;color:var(--c-text)!important}
+.badge,.filters,.card,.toolbar-card,.kpi,.variance-filters,.modal,
+.entry-card,.entry-submit-bar,.entry-search-sort,.master-picker,.entry-popup,
+.last-submission-panel,.app-download-mini{background:linear-gradient(145deg,#151515,#101010)!important;color:var(--c-text)!important;border-color:var(--c-line)!important}
+.filter select,.filter input,.multi-trigger,.multi-menu,.multi-search,
+.search,.select,.entry-grid input,.entry-grid select,.master-search,.entry-num{background:#0a0a0a!important;color:#fff!important;border-color:#303030!important}
+.multi-option,.multi-foot,.filter-head{color:#ddd!important}
+.seg,.seg button{background:#0d0d0d!important;color:#aaa!important;border-color:#303030!important}
+.seg button.active{background:rgba(47,99,230,.22)!important;color:#fff!important}
+.table-wrap,.entry-table-wrap,.inward-table-wrap{background:#0d0d0d!important;border-color:var(--c-line)!important}
+table,.entry-table,.inward-table{background:#0d0d0d!important;color:#eee!important}
+th,.entry-table th,.inward-table th{background:#151515!important;color:#888!important;border-color:#292929!important}
+td,.entry-table td,.inward-table td{background:#0d0d0d!important;color:#ddd!important;border-color:#222!important}
+tbody tr:hover td,.entry-table tbody tr:hover td,.inward-table tbody tr:hover td{background:#181818!important}
+.modal-close,.menu-toggle{background:#151515!important;color:#fff!important;border-color:#333!important}
+
+/* Entire Field Entry page */
+.entry-body{background:radial-gradient(circle at 50% -10%,rgba(255,45,141,.08),transparent 32%),#070707!important;color:#fff!important}
+.entry-shell,.entry-page{background:transparent!important;color:#fff!important}
+.entry-body .entry-card{background:linear-gradient(145deg,#151515,#101010)!important;border-color:#292929!important}
+.entry-body .entry-stat{background:#101010!important;border-color:#292929!important}
+.entry-body .entry-stat strong{color:#fff!important}
+.entry-body .entry-stat span,.entry-body .entry-stat small{color:#777!important}
+.entry-body .entry-grid .filter input,.entry-body .entry-grid .filter select{background:#0a0a0a!important;color:#fff!important;border-color:#303030!important}
+.entry-body .entry-setup-actions,.entry-body .entry-toolbar{color:#fff!important}
+
+/* Search / sort area — this was the remaining white surface */
+.entry-body .entry-search-sort{background:#0e0e0e!important;border:1px solid #292929!important;color:#fff!important}
+.entry-body .entry-search-wrap{background:#111!important;border:1px solid #343434!important;color:#fff!important}
+.entry-body .entry-search-wrap input{background:transparent!important;color:#fff!important}
+.entry-body .entry-search-wrap input::placeholder{color:#686868!important}
+.entry-body .entry-search-wrap span{color:#999!important}
+.entry-body .entry-sort-note{color:#888!important}
+.entry-body .entry-sort-note b{color:#ff5eab!important}
+
+/* Last Submission • Shop Wise — header, cards and badges */
+.entry-body .last-submission-panel{background:#0f0f0f!important;border:1px solid #292929!important}
+.entry-body .last-sub-head{background:linear-gradient(180deg,#151515,#111)!important;border-bottom:1px solid #292929!important;color:#fff!important}
+.entry-body .last-sub-head b{color:#f7f7f7!important}
+.entry-body .last-sub-head span:not(.last-sub-refresh){color:#777780!important}
+.entry-body .last-sub-refresh{background:rgba(66,211,146,.10)!important;color:#42d392!important;border:1px solid rgba(66,211,146,.18)!important}
+.entry-body .last-sub-grid{background:#0f0f0f!important}
+.entry-body .last-sub-item{background:#111!important;border:1px solid #292929!important;color:#fff!important}
+.entry-body .last-sub-item.active{background:linear-gradient(145deg,rgba(255,43,138,.10),rgba(255,43,138,.035))!important;border-color:rgba(255,43,138,.70)!important;box-shadow:inset 3px 0 #ff2b8a!important}
+.entry-body .last-sub-store{color:#f7f7f7!important}
+.entry-body .last-sub-time,.entry-body .last-sub-by{color:#777780!important}
+.entry-body .last-sub-meta span{background:#1d1d1d!important;color:#aaa!important;border:1px solid #303030!important}
+
+/* Master SKU picker */
+.entry-body .master-picker{background:#101010!important;border-color:#292929!important;color:#fff!important}
+.entry-body .master-picker-head{background:#151515!important;color:#fff!important;border-color:#292929!important}
+.entry-body .master-option{background:#111!important;color:#ddd!important;border-color:#292929!important}
+.entry-body .master-option:hover{background:#181818!important}
+.entry-body .master-search{background:#0a0a0a!important;color:#fff!important}
+
+/* Loading / popup / iOS */
+.entry-body .entry-loading{background:rgba(0,0,0,.78)!important}
+.entry-body .entry-loading-card,.entry-body .app-install-card{background:#111!important;color:#fff!important;border-color:#303030!important}
+.entry-body .app-install-head{border-color:#2b2b2b!important}
+.entry-body .app-install-head h3{color:#fff!important}
+.entry-body .ios-steps p{color:#bbb!important}
+.entry-body .ios-steps span{background:rgba(255,45,141,.14)!important;color:#ff5eab!important}
+.entry-body .ios-note{background:#171717!important;border-color:#333!important;color:#aaa!important}
+
+/* Download strip */
+.entry-body .app-download-mini{background:linear-gradient(135deg,#0b0b0b,#111,#170b12)!important;color:#fff!important;border-color:#2b2b2b!important}
+.entry-body .app-download-mini-actions a,.entry-body .app-download-mini-actions button{background:#111!important;color:#f5f5f5!important;border-color:#353535!important}
+.entry-body .app-download-mini-actions a{background:rgba(255,45,141,.12)!important;color:#ff5eab!important;border-color:rgba(255,45,141,.45)!important}
+
+/* Inward validation, if/when enabled */
+.entry-body .inward-table-wrap,.entry-body #inResult{background:#0d0d0d!important;color:#fff!important;border-color:#292929!important}
+.entry-body .inward-fetch-row input{background:#0a0a0a!important;color:#fff!important;border-color:#303030!important}
+
+/* Prevent browser autofill from reintroducing white fields */
+.entry-body input:-webkit-autofill,
+.entry-body input:-webkit-autofill:hover,
+.entry-body input:-webkit-autofill:focus,
+.entry-body select:-webkit-autofill{
+  -webkit-text-fill-color:#fff!important;
+  -webkit-box-shadow:0 0 0 1000px #0a0a0a inset!important;
+  transition:background-color 9999s ease-out 0s!important;
+}

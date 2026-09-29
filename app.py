@@ -48,7 +48,7 @@ EXCEL_SHEET = os.getenv("EXCEL_SHEET", "Stock_Data").strip()
 VARIANCE_EXCEL_URL = os.getenv("VARIANCE_EXCEL_URL", "").strip()
 VARIANCE_SHEET = os.getenv("VARIANCE_SHEET", "Variance_Data").strip()
 CACHE_SECONDS = int(os.getenv("CACHE_SECONDS", "900"))
-MAPPING_JSON_PATH = os.getenv("MAPPING_JSON_PATH", os.path.join(app.root_path, "data", "mapping.json")).strip()
+MAPPING_JSON_PATH = os.path.join(app.root_path, "data", "mapping.json")
 MAPPING_JSON_URL = os.getenv("MAPPING_JSON_URL", "").strip()
 MAPPING_JSON_SOURCE = os.getenv("MAPPING_JSON_SOURCE", "local").strip().lower()
 MAPPING_CACHE_SECONDS = int(os.getenv("MAPPING_CACHE_SECONDS", "900"))
@@ -256,11 +256,9 @@ def load_mapping(force=False):
     payload = None
     source = ""
 
-    # Local mapping is the production-safe default. A stale Render
-    # MAPPING_JSON_URL must not silently override the bundled mapping and
-    # make a valid signed-in email appear unmapped. Set
-    # MAPPING_JSON_SOURCE=remote only when a remote mapping is intentionally
-    # being used.
+    # The bundled file is the canonical production mapping. Render environment
+    # variables cannot redirect this lookup accidentally. A remote mapping is
+    # opt-in only via MAPPING_JSON_SOURCE=remote.
     use_remote = MAPPING_JSON_SOURCE == "remote" and bool(MAPPING_JSON_URL)
 
     if use_remote:
@@ -272,15 +270,15 @@ def load_mapping(force=False):
         except Exception as e:
             raise RuntimeError(f"Could not load MAPPING_JSON_URL: {e}")
     else:
-        path = MAPPING_JSON_PATH
+        path = os.path.join(app.root_path, "data", "mapping.json")
         if not os.path.exists(path):
-            raise RuntimeError(f"Mapping JSON not found: {path}. Upload mapping.json to the data folder or set MAPPING_JSON_SOURCE=remote with MAPPING_JSON_URL.")
+            raise RuntimeError(f"Canonical mapping JSON not found: {path}")
         try:
             with open(path, "r", encoding="utf-8-sig") as f:
                 payload = json.load(f)
-            source = f"Bundled JSON • {os.path.basename(path)}"
+            source = "Bundled JSON • data/mapping.json"
         except Exception as e:
-            raise RuntimeError(f"Could not read mapping JSON: {e}")
+            raise RuntimeError(f"Could not read canonical mapping JSON: {e}")
 
     mp = clean_json_map(payload)
     _cache["map_df"] = mp
@@ -1096,7 +1094,7 @@ def entry_meta():
             available=stock[stock["Store Name"].astype(str).str.strip()==store][["EAN Code","Product Name"]].drop_duplicates().to_dict(orient="records")
             master_skus=master[["EAN Code","Product Name"]].to_dict(orient="records")
 
-        return jsonify({"ok":True,"stores":stores,"selected_store":store,"available_skus":available,"master_skus":master_skus,"mapping_source":_cache.get("map_source","")})
+        return jsonify({"ok":True,"stores":stores,"selected_store":store,"available_skus":available,"master_skus":master_skus,"mapping_source":_cache.get("map_source",""),"mapped_email":email})
     except Exception as e:
         return jsonify({"ok":False,"error":str(e)}),500
 
