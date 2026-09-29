@@ -50,6 +50,7 @@ VARIANCE_SHEET = os.getenv("VARIANCE_SHEET", "Variance_Data").strip()
 CACHE_SECONDS = int(os.getenv("CACHE_SECONDS", "900"))
 MAPPING_JSON_PATH = os.getenv("MAPPING_JSON_PATH", os.path.join(app.root_path, "data", "mapping.json")).strip()
 MAPPING_JSON_URL = os.getenv("MAPPING_JSON_URL", "").strip()
+MAPPING_JSON_SOURCE = os.getenv("MAPPING_JSON_SOURCE", "local").strip().lower()
 MAPPING_CACHE_SECONDS = int(os.getenv("MAPPING_CACHE_SECONDS", "900"))
 SUBMISSION_API_URL = os.getenv("SUBMISSION_API_URL", "").strip()
 SUBMISSION_API_SECRET = os.getenv("SUBMISSION_API_SECRET", "").strip()
@@ -254,7 +255,15 @@ def load_mapping(force=False):
 
     payload = None
     source = ""
-    if MAPPING_JSON_URL:
+
+    # Local mapping is the production-safe default. A stale Render
+    # MAPPING_JSON_URL must not silently override the bundled mapping and
+    # make a valid signed-in email appear unmapped. Set
+    # MAPPING_JSON_SOURCE=remote only when a remote mapping is intentionally
+    # being used.
+    use_remote = MAPPING_JSON_SOURCE == "remote" and bool(MAPPING_JSON_URL)
+
+    if use_remote:
         try:
             r = requests.get(MAPPING_JSON_URL, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
             r.raise_for_status()
@@ -265,7 +274,7 @@ def load_mapping(force=False):
     else:
         path = MAPPING_JSON_PATH
         if not os.path.exists(path):
-            raise RuntimeError(f"Mapping JSON not found: {path}. Upload mapping.json to the data folder or set MAPPING_JSON_URL.")
+            raise RuntimeError(f"Mapping JSON not found: {path}. Upload mapping.json to the data folder or set MAPPING_JSON_SOURCE=remote with MAPPING_JSON_URL.")
         try:
             with open(path, "r", encoding="utf-8-sig") as f:
                 payload = json.load(f)
