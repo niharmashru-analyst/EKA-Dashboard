@@ -1,32 +1,24 @@
 {
-  "mappings": {
-    "nihar.mashru@reneecosmetics.in": {
-      "shops": [
-        {
-          "code": "S001",
-          "name": "Srinagar Airport",
-          "status": "Active"
-        }
-      ]
-    },
-    "nihar@reneecosmetics.in": {
-      "shops": [
-        {
-          "code": "M002",
-          "name": "Mumbai Airport",
-          "status": "Active"
-        },
-        {
-          "code": "S002",
-          "name": "Srinagar Airport",
-          "status": "Active"
-        },
-        {
-          "code": "C002",
-          "name": "Chennai Airport",
-          "status": "Active"
-        }
-      ]
-    }
+  "users": {
+    "user@company.com": [
+      {
+        "store_code": "D009",
+        "store_name": "H&B-NCR DC",
+        "city": "Delhi",
+        "region": "North"
+      },
+      {
+        "store_code": "TOSP",
+        "store_name": "Metro Cash_TOSP",
+        "city": "Hyderabad",
+        "region": "South"
+      },
+      {
+        "store_code": "TOQS",
+        "store_name": "Metro_East_Jadavpur_Kolkata_TOQS",
+        "city": "Kolkata",
+        "region": "East"
+      }
+    ]
   }
 }

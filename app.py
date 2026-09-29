@@ -868,19 +868,114 @@ def logout():
     session.clear()
     return redirect("/login")
 
-@app.get("/admin")
-def admin():
-    if not session.get("is_admin"):
-        return render_template("access_denied.html", page="admin"), 403
+def _admin_access_rows():
     users = _load_users_config().get("users", {})
-    rows=[]
+    if not isinstance(users, dict):
+        users = {}
+
+    rows = []
     for email, rec in users.items():
         if not isinstance(rec, dict):
             continue
         access = rec.get("access", [])
-        if isinstance(access, str): access=[access]
-        rows.append({"email": email, "name": rec.get("name", ""), "access": access})
-    return render_template("admin.html", rows=rows)
+        if isinstance(access, str):
+            access = [access]
+        access = [str(x).strip().lower() for x in access if str(x).strip()]
+        status = str(rec.get("status", "Active") or "Active").strip()
+        rows.append({
+            "email": str(email).strip().lower(),
+            "name": str(rec.get("name", "") or "").strip(),
+            "access": access,
+            "status": status,
+            "is_admin": "admin" in access,
+        })
+    return rows
+
+
+def _admin_mapping_rows():
+    rows = []
+    try:
+        path = MAPPING_JSON_PATH
+        with open(path, "r", encoding="utf-8-sig") as f:
+            payload = json.load(f)
+
+        if isinstance(payload.get("mappings"), dict):
+            users = payload.get("mappings", {})
+            normalized = {}
+            for email, value in users.items():
+                if isinstance(value, dict) and "shops" in value:
+                    normalized[email] = value.get("shops", [])
+                else:
+                    normalized[email] = value
+            users = normalized
+        else:
+            users = payload.get("users", payload)
+
+        if isinstance(users, dict):
+            for email, shops in users.items():
+                if isinstance(shops, dict):
+                    shops = [shops]
+                if not isinstance(shops, list):
+                    continue
+                for shop in shops:
+                    if isinstance(shop, str):
+                        rows.append({
+                            "email": str(email).strip().lower(),
+                            "code": "",
+                            "name": shop.strip(),
+                            "city": "",
+                            "region": "",
+                            "status": "Active",
+                        })
+                    elif isinstance(shop, dict):
+                        status = str(shop.get("status", shop.get("Status", "Active")) or "Active").strip()
+                        rows.append({
+                            "email": str(email).strip().lower(),
+                            "code": str(shop.get("store_code", shop.get("Store Code", shop.get("code", ""))) or "").strip(),
+                            "name": str(shop.get("store_name", shop.get("Store Name", shop.get("shop_name", shop.get("Shop Name", shop.get("name", ""))))) or "").strip(),
+                            "city": str(shop.get("city", shop.get("City", "")) or "").strip(),
+                            "region": str(shop.get("region", shop.get("Region", "")) or "").strip(),
+                            "status": status,
+                        })
+    except Exception:
+        # Admin overview should remain usable even if mapping JSON is unavailable.
+        rows = []
+    return [r for r in rows if r["name"]]
+
+
+@app.get("/admin")
+def admin():
+    if not session.get("is_admin"):
+        return render_template("access_denied.html", page="admin"), 403
+
+    users = _admin_access_rows()
+    shops = _admin_mapping_rows()
+
+    active_users = sum(1 for r in users if str(r["status"]).lower() in {"active", "enabled"})
+    inactive_users = len(users) - active_users
+    admin_users = sum(1 for r in users if r["is_admin"])
+    mapped_users = len(set(r["email"] for r in shops))
+    unique_shops = len(set((r["code"], r["name"]) for r in shops))
+
+    access_counts = {
+        "stock_entry": sum(1 for r in users if "stock_entry" in r["access"]),
+        "dashboard": sum(1 for r in users if "dashboard" in r["access"]),
+        "admin": admin_users,
+    }
+
+    return render_template(
+        "admin.html",
+        rows=users,
+        shops=shops,
+        active_users=active_users,
+        inactive_users=inactive_users,
+        admin_users=admin_users,
+        mapped_users=mapped_users,
+        unique_shops=unique_shops,
+        access_counts=access_counts,
+        mapping_file_ok=bool(shops),
+        users_file_ok=bool(users),
+    )
 
 @app.get("/")
 @require_access("dashboard")

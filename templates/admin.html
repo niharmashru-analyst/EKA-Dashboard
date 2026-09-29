@@ -1,1 +1,247 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CORMATE • Admin Panel</title><link rel="stylesheet" href="/static/dashboard.css?v=46"><style>body{margin:0;background:#050505;color:#fff;font-family:Manrope,Arial,sans-serif}.wrap{width:min(94vw,1100px);margin:0 auto;padding:34px 0}.eyebrow{color:#ff2b9b;font-size:11px;font-weight:800;letter-spacing:.16em}.head{display:flex;justify-content:space-between;align-items:end;gap:20px;margin-bottom:22px}.head h1{margin:7px 0;font-size:30px}.muted{color:#999}.links a{color:#fff;text-decoration:none;margin-left:14px}.panel{background:#111;border:1px solid #292929;border-radius:18px;overflow:auto}.table{width:100%;border-collapse:collapse;min-width:620px}.table th,.table td{text-align:left;padding:14px 16px;border-bottom:1px solid #242424;font-size:13px}.table th{color:#aaa;font-size:11px;text-transform:uppercase;letter-spacing:.08em}.pill{display:inline-block;background:#25121e;border:1px solid #54213d;color:#ff75bd;border-radius:999px;padding:5px 9px;margin:2px;font-size:11px}.note{margin-top:16px;color:#777;font-size:12px}</style></head><body><main class="wrap"><div class="head"><div><div class="eyebrow">CORMATE ADMIN</div><h1>Access Control</h1><div class="muted">Users are maintained in <code>data/users.json</code>.</div></div><div class="links"><a href="/choose">Workspace</a><a href="/logout">Sign out</a></div></div><div class="panel"><table class="table"><thead><tr><th>Email</th><th>Name</th><th>Access</th></tr></thead><tbody>{% for r in rows %}<tr><td>{{ r.email }}</td><td>{{ r.name }}</td><td>{% for a in r.access %}<span class="pill">{{ a }}</span>{% endfor %}</td></tr>{% else %}<tr><td colspan="3">No users configured.</td></tr>{% endfor %}</tbody></table></div><div class="note">Edit <code>data/users.json</code> and redeploy to add users or change access. The admin password is controlled by Render environment variables.</div></main></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CORMATE • Access Management</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#080808;--card:#111;--card2:#151515;--line:#292929;--line2:#202020;
+  --text:#fff;--muted:#92929a;--pink:#ff2b8a;--pink2:#ff72b4;--blue:#2f63e6;
+  --green:#42d392;--red:#ff5b6e;--yellow:#ffc857;
+}
+*{box-sizing:border-box}
+body{margin:0;background:radial-gradient(circle at 75% -10%,rgba(47,99,230,.12),transparent 34%),radial-gradient(circle at 15% 0%,rgba(255,43,138,.09),transparent 28%),var(--bg);color:var(--text);font-family:Manrope,Arial,sans-serif}
+.wrap{width:min(96vw,1480px);margin:0 auto;padding:28px 0 60px}
+.top{display:flex;justify-content:space-between;align-items:flex-end;gap:24px;margin-bottom:24px}
+.eyebrow{color:var(--pink);font-size:11px;font-weight:800;letter-spacing:.18em}
+h1{font-family:'Plus Jakarta Sans',sans-serif;font-size:34px;line-height:1.1;margin:7px 0}
+.sub{color:var(--muted);font-size:13px}
+.actions{display:flex;gap:9px;flex-wrap:wrap}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;text-decoration:none;border:1px solid var(--line);border-radius:10px;padding:10px 14px;background:#141414;color:#fff;font-weight:800;font-size:12px;cursor:pointer}
+.btn:hover{border-color:#444}
+.btn.primary{background:var(--pink);border-color:var(--pink)}
+.btn.blue{background:#2f63e6;color:#fff;border-color:#2f63e6}
+.btn.ghost{background:transparent}
+.back{color:#fff;text-decoration:none;font-size:12px;font-weight:800;margin-bottom:10px;display:inline-flex}
+.back:hover{color:var(--pink2)}
+.kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:18px}
+.kpi{background:linear-gradient(145deg,#141414,#0f0f0f);border:1px solid var(--line);border-radius:16px;padding:16px;min-height:102px}
+.kpi-label{font-size:10px;text-transform:uppercase;letter-spacing:.11em;color:#85858d;font-weight:800}
+.kpi-value{font-family:'Plus Jakarta Sans';font-size:27px;font-weight:800;margin-top:12px}
+.kpi-note{font-size:10px;color:#666;margin-top:5px}
+.kpi.pink .kpi-value{color:var(--pink2)} .kpi.blue .kpi-value{color:#6f96ff}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
+.panel{background:linear-gradient(145deg,#121212,#0d0d0d);border:1px solid var(--line);border-radius:16px;overflow:hidden}
+.panel-head{display:flex;justify-content:space-between;align-items:center;gap:14px;padding:18px 18px 14px;border-bottom:1px solid var(--line2)}
+.panel-title{font-size:15px;font-weight:800}.panel-note{font-size:11px;color:#777;margin-top:4px}
+.panel-body{padding:16px}
+.access-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.access-card{border:1px solid var(--line);border-radius:12px;background:#101010;padding:14px}
+.access-card b{font-size:12px}.access-card strong{display:block;font-size:25px;margin-top:8px}.access-card span{font-size:10px;color:#777}
+.progress{height:5px;background:#222;border-radius:10px;margin-top:10px;overflow:hidden}.progress i{display:block;height:100%;border-radius:10px;background:var(--pink);width:var(--w)}
+.health{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.health-card{border:1px solid var(--line);border-radius:12px;padding:13px;background:#101010}
+.health-card .dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:7px;background:var(--green)}
+.health-card.bad .dot{background:var(--red)}
+.health-card b{font-size:12px}.health-card small{display:block;color:#777;font-size:10px;margin-top:6px}
+.tools{display:flex;gap:8px;flex-wrap:wrap}
+.search{width:100%;height:40px;background:#0d0d0d;border:1px solid #303030;border-radius:10px;color:#fff;padding:0 12px;outline:none}
+.search:focus{border-color:var(--blue)}
+.toolbar{display:grid;grid-template-columns:1fr 150px 150px;gap:9px;padding:14px 16px;border-bottom:1px solid var(--line2)}
+.select{height:40px;background:#0d0d0d;border:1px solid #303030;color:#fff;border-radius:10px;padding:0 10px}
+.table-wrap{overflow:auto}.table{width:100%;border-collapse:collapse;min-width:760px}
+.table th,.table td{text-align:left;padding:12px 14px;border-bottom:1px solid #202020;font-size:12px;vertical-align:middle}
+.table th{color:#7d7d86;font-size:10px;text-transform:uppercase;letter-spacing:.09em;position:sticky;top:0;background:#111;z-index:1}
+.table tr:hover td{background:#151515}
+.name{font-weight:800}.email{color:#999;font-size:11px;margin-top:3px}
+.pill{display:inline-flex;background:#21131b;border:1px solid #4b1d37;color:#ff78b9;border-radius:999px;padding:4px 8px;margin:2px;font-size:10px;font-weight:700}
+.pill.blue{background:#111a31;border-color:#263d78;color:#83a2ff}.pill.green{background:#10251d;border-color:#204e3a;color:#62dba3}.pill.red{background:#291316;border-color:#5b252d;color:#ff7785}
+.num{font-weight:800}.muted{color:#777}
+.section{margin-bottom:16px}
+.matrix td{text-align:center}.matrix td:first-child{text-align:left}.yes{color:var(--green);font-weight:900}.no{color:#4e4e55}
+.shop-count{color:#b7b7bf;font-weight:800}
+.details{display:none;background:#0b0b0b}.details.open{display:table-row}.details-inner{padding:14px 18px;border-bottom:1px solid #242424}
+.shop-list{display:flex;flex-wrap:wrap;gap:7px}.shop-chip{background:#151515;border:1px solid #2a2a2a;border-radius:9px;padding:7px 9px;font-size:10px;color:#ccc}.shop-chip b{color:#fff}
+.empty{padding:28px;color:#777;text-align:center;font-size:12px}
+.footer{display:flex;justify-content:space-between;gap:12px;color:#5f5f66;font-size:10px;margin-top:18px}
+code{color:#bbb}
+@media(max-width:1050px){.kpis{grid-template-columns:repeat(3,1fr)}.grid2{grid-template-columns:1fr}}
+@media(max-width:650px){.wrap{padding:18px 0 40px}.top{align-items:flex-start;flex-direction:column}.top .actions{width:100%}.actions .btn{flex:1}.kpis{grid-template-columns:repeat(2,1fr)}.access-grid,.health{grid-template-columns:1fr}.toolbar{grid-template-columns:1fr}.kpi{min-height:92px}.kpi-value{font-size:23px}h1{font-size:28px}}
+</style>
+</head>
+<body>
+<main class="wrap">
+
+  <a class="back" href="/choose">← Selection</a>
+
+  <header class="top">
+    <div>
+      <div class="eyebrow">CORMATE ADMIN</div>
+      <h1>Access Management</h1>
+      <div class="sub">Control visibility, review user access, and audit shop mappings from one place.</div>
+    </div>
+    <div class="actions">
+      <a class="btn ghost" href="/choose">Workspace</a>
+      <button class="btn blue" type="button" onclick="location.reload()">↻ Refresh</button>
+      <a class="btn primary" href="/logout">Sign out</a>
+    </div>
+  </header>
+
+  <section class="kpis">
+    <div class="kpi"><div class="kpi-label">Total Users</div><div class="kpi-value">{{ rows|length }}</div><div class="kpi-note">Configured accounts</div></div>
+    <div class="kpi pink"><div class="kpi-label">Active Users</div><div class="kpi-value">{{ active_users }}</div><div class="kpi-note">Active / enabled accounts</div></div>
+    <div class="kpi"><div class="kpi-label">Inactive</div><div class="kpi-value">{{ inactive_users }}</div><div class="kpi-note">Blocked accounts</div></div>
+    <div class="kpi blue"><div class="kpi-label">Admin Users</div><div class="kpi-value">{{ admin_users }}</div><div class="kpi-note">Full access</div></div>
+    <div class="kpi"><div class="kpi-label">Mapped Users</div><div class="kpi-value">{{ mapped_users }}</div><div class="kpi-note">Users with shop mapping</div></div>
+    <div class="kpi pink"><div class="kpi-label">Unique Shops</div><div class="kpi-value">{{ unique_shops }}</div><div class="kpi-note">From mapping.json</div></div>
+  </section>
+
+  <div class="grid2">
+    <section class="panel">
+      <div class="panel-head"><div><div class="panel-title">Access Overview</div><div class="panel-note">How access is distributed across configured users.</div></div></div>
+      <div class="panel-body">
+        {% set total = rows|length %}
+        <div class="access-grid">
+          <div class="access-card"><b>Stock Entry</b><strong>{{ access_counts.stock_entry }}</strong><span>users</span><div class="progress"><i style="--w:{{ (access_counts.stock_entry / total * 100) if total else 0 }}%"></i></div></div>
+          <div class="access-card"><b>Dashboard</b><strong>{{ access_counts.dashboard }}</strong><span>users</span><div class="progress"><i style="--w:{{ (access_counts.dashboard / total * 100) if total else 0 }}%;background:#2f63e6"></i></div></div>
+          <div class="access-card"><b>Admin</b><strong>{{ access_counts.admin }}</strong><span>users</span><div class="progress"><i style="--w:{{ (access_counts.admin / total * 100) if total else 0 }}%;background:#ff72b4"></i></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><div><div class="panel-title">Configuration Health</div><div class="panel-note">Current access-control data available to the server.</div></div></div>
+      <div class="panel-body">
+        <div class="health">
+          <div class="health-card"><span class="dot"></span><b>users.json</b><small>{{ rows|length }} user record(s) loaded.</small></div>
+          <div class="health-card {% if not mapping_file_ok %}bad{% endif %}"><span class="dot"></span><b>mapping.json</b><small>{% if mapping_file_ok %}{{ shops|length }} mapping record(s) loaded.{% else %}No valid shop mappings loaded.{% endif %}</small></div>
+        </div>
+        <div style="margin-top:12px;color:#666;font-size:10px">User passwords are intentionally never displayed in this panel. Changes remain managed through the JSON source / deployment workflow.</div>
+      </div>
+    </section>
+  </div>
+
+  <section class="panel section" id="users">
+    <div class="panel-head">
+      <div><div class="panel-title">User Access Management</div><div class="panel-note">Search and review who can access each workspace.</div></div>
+      <div class="tools"><button class="btn" type="button" onclick="clearUserFilters()">Clear filters</button></div>
+    </div>
+    <div class="toolbar">
+      <input id="userSearch" class="search" placeholder="Search name or email…" oninput="filterUsers()">
+      <select id="accessFilter" class="select" onchange="filterUsers()"><option value="">All access</option><option value="stock_entry">Stock Entry</option><option value="dashboard">Dashboard</option><option value="admin">Admin</option></select>
+      <select id="statusFilter" class="select" onchange="filterUsers()"><option value="">All status</option><option value="active">Active</option><option value="inactive">Inactive</option></select>
+    </div>
+    <div class="table-wrap">
+      <table class="table" id="usersTable">
+        <thead><tr><th>User</th><th>Status</th><th>Access</th><th>Mapped Shops</th><th>Action</th></tr></thead>
+        <tbody>
+        {% for r in rows %}
+          {% set user_shops = shops|selectattr("email","equalto",r.email)|list %}
+          <tr class="user-row" data-search="{{ (r.name ~ ' ' ~ r.email)|lower }}" data-access="{{ r.access|join(' ')|lower }}" data-status="{{ 'active' if r.status|lower in ['active','enabled'] else 'inactive' }}">
+            <td><div class="name">{{ r.name or 'Unnamed User' }}</div><div class="email">{{ r.email }}</div></td>
+            <td>{% if r.status|lower in ['active','enabled'] %}<span class="pill green">Active</span>{% else %}<span class="pill red">Inactive</span>{% endif %}</td>
+            <td>{% for a in r.access %}<span class="pill {% if a=='dashboard' %}blue{% endif %}">{{ a|replace('_',' ')|title }}</span>{% else %}<span class="muted">No access</span>{% endfor %}</td>
+            <td class="shop-count">{{ user_shops|length }}</td>
+            <td><button class="btn" type="button" onclick="toggleDetails(this)">View shops</button></td>
+          </tr>
+          <tr class="details"><td colspan="5"><div class="details-inner">
+            <div style="font-size:11px;color:#777;margin-bottom:9px">Shop assignments for <b style="color:#fff">{{ r.email }}</b></div>
+            <div class="shop-list">
+              {% for s in user_shops %}<div class="shop-chip"><b>{{ s.name }}</b>{% if s.code %} • {{ s.code }}{% endif %}{% if s.city %} • {{ s.city }}{% endif %}</div>{% else %}<span class="muted">No shop mappings found.</span>{% endfor %}
+            </div>
+          </div></td></tr>
+        {% else %}
+          <tr><td colspan="5" class="empty">No users configured.</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel section" id="matrix">
+    <div class="panel-head"><div><div class="panel-title">Access Matrix</div><div class="panel-note">One-screen view of workspace permissions.</div></div></div>
+    <div class="table-wrap">
+      <table class="table matrix">
+        <thead><tr><th>User</th><th>Stock Entry</th><th>Dashboard</th><th>Admin</th><th>Shops</th></tr></thead>
+        <tbody>
+        {% for r in rows %}
+          {% set user_shops = shops|selectattr("email","equalto",r.email)|list %}
+          <tr><td><div class="name">{{ r.name or 'Unnamed User' }}</div><div class="email">{{ r.email }}</div></td>
+            <td>{% if 'stock_entry' in r.access %}<span class="yes">✓</span>{% else %}<span class="no">—</span>{% endif %}</td>
+            <td>{% if 'dashboard' in r.access %}<span class="yes">✓</span>{% else %}<span class="no">—</span>{% endif %}</td>
+            <td>{% if r.is_admin %}<span class="yes">✓</span>{% else %}<span class="no">—</span>{% endif %}</td>
+            <td>{{ user_shops|length }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel section" id="shops">
+    <div class="panel-head">
+      <div><div class="panel-title">Shop Access Mapping</div><div class="panel-note">Review email → shop assignments generated from mapping.json.</div></div>
+    </div>
+    <div class="toolbar">
+      <input id="shopSearch" class="search" placeholder="Search email, shop, code, city or region…" oninput="filterShops()">
+      <select id="shopStatus" class="select" onchange="filterShops()"><option value="">All status</option><option value="active">Active</option><option value="inactive">Inactive</option></select>
+      <div class="muted" style="align-self:center;font-size:11px">{{ shops|length }} mapping rows</div>
+    </div>
+    <div class="table-wrap">
+      <table class="table" id="shopsTable">
+        <thead><tr><th>Email</th><th>Shop</th><th>Code</th><th>City</th><th>Region</th><th>Status</th></tr></thead>
+        <tbody>
+        {% for s in shops %}
+          <tr class="shop-row" data-search="{{ (s.email ~ ' ' ~ s.name ~ ' ' ~ s.code ~ ' ' ~ s.city ~ ' ' ~ s.region)|lower }}" data-status="{{ 'active' if s.status|lower in ['active','enabled'] else 'inactive' }}">
+            <td>{{ s.email }}</td><td><b>{{ s.name }}</b></td><td>{{ s.code or '—' }}</td><td>{{ s.city or '—' }}</td><td>{{ s.region or '—' }}</td>
+            <td>{% if s.status|lower in ['active','enabled'] %}<span class="pill green">Active</span>{% else %}<span class="pill red">Inactive</span>{% endif %}</td>
+          </tr>
+        {% else %}<tr><td colspan="6" class="empty">No shop mappings available.</td></tr>{% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer class="footer"><span>CORMATE Access Management • RENÉE E.K.A.</span><span>Passwords are never exposed in the admin UI.</span></footer>
+</main>
+
+<script>
+function filterUsers(){
+  const q=(document.getElementById('userSearch').value||'').toLowerCase().trim();
+  const a=(document.getElementById('accessFilter').value||'').toLowerCase();
+  const s=(document.getElementById('statusFilter').value||'').toLowerCase();
+  document.querySelectorAll('#usersTable .user-row').forEach(r=>{
+    const okQ=!q||r.dataset.search.includes(q);
+    const okA=!a||r.dataset.access.split(' ').includes(a);
+    const okS=!s||r.dataset.status===s;
+    const show=okQ&&okA&&okS;
+    r.style.display=show?'':'none';
+    const d=r.nextElementSibling;
+    if(d)d.style.display='none';
+  });
+}
+function clearUserFilters(){
+  document.getElementById('userSearch').value='';
+  document.getElementById('accessFilter').value='';
+  document.getElementById('statusFilter').value='';
+  filterUsers();
+}
+function toggleDetails(btn){
+  const row=btn.closest('tr'), d=row.nextElementSibling;
+  if(!d)return;
+  const open=d.classList.toggle('open');
+  btn.textContent=open?'Hide shops':'View shops';
+}
+function filterShops(){
+  const q=(document.getElementById('shopSearch').value||'').toLowerCase().trim();
+  const s=(document.getElementById('shopStatus').value||'').toLowerCase();
+  document.querySelectorAll('#shopsTable .shop-row').forEach(r=>{
+    r.style.display=(!q||r.dataset.search.includes(q))&&(!s||r.dataset.status===s)?'':'none';
+  });
+}
+</script>
+</body>
+</html>

@@ -459,3 +459,100 @@ main{background:var(--renee-bg)}.eyebrow{color:var(--renee-pink-2)}.topbar h1{co
 }
 
 .dashboard-access-card{max-width:720px;margin:24px auto}.dashboard-access-kicker{font-size:10px;font-weight:800;letter-spacing:2px;color:#ff2b9a;margin-bottom:8px}.dashboard-password-row{display:flex;gap:10px;margin-top:22px}.dashboard-password-row input{flex:1;background:#090909;border:1px solid #2a2a2a;color:#fff;border-radius:12px;padding:13px 14px}.dashboard-password-row input:focus{outline:none;border-color:#ff2b9a;box-shadow:0 0 0 3px rgba(255,43,154,.12)}@media(max-width:600px){.dashboard-password-row{flex-direction:column}.dashboard-password-row .btn{width:100%}}
+
+/* =========================================================
+   CORMATE / RENÉE MASTER DARK THEME
+   Normalizes legacy white/Salesforce surfaces across Entry,
+   Dashboard and shared components.
+   ========================================================= */
+:root{
+  --c-bg:#080808;
+  --c-bg2:#0d0d0d;
+  --c-card:#111111;
+  --c-card2:#151515;
+  --c-line:#272727;
+  --c-line2:#1d1d1d;
+  --c-text:#f7f7f7;
+  --c-muted:#8e8e97;
+  --c-pink:#ff2b8a;
+  --c-pink2:#ff72b4;
+  --c-blue:#2f63e6;
+  --c-green:#42d392;
+  --c-red:#ff5b6e;
+  --c-yellow:#ffc857;
+}
+html,body{background:var(--c-bg)!important;color:var(--c-text)!important}
+body{font-family:Manrope,Inter,Arial,sans-serif!important}
+a{color:var(--c-pink2)}
+button,input,select,textarea{font-family:inherit}
+.sidebar{background:#0b0b0b!important;border-right:1px solid var(--c-line)!important}
+.brand-name{color:#fff!important}
+.brand-mark{background:linear-gradient(145deg,#ff2b8a,#b51f65)!important;color:#fff!important}
+.brand-sub,.side-note,.muted{color:var(--c-muted)!important}
+.nav{color:#bdbdc5!important;background:transparent!important}
+.nav:hover{background:#151515!important;color:#fff!important}
+.nav.active{background:rgba(255,43,138,.10)!important;color:var(--c-pink2)!important;box-shadow:inset 3px 0 var(--c-pink)!important}
+.nav-locked{opacity:.48!important}
+main,.entry-shell{background:transparent!important}
+.topbar,.entry-mobilebar{color:#fff!important}
+.topbar h1,.entry-card h1,.entry-card h2{color:#fff!important}
+.eyebrow,.dashboard-access-kicker{color:var(--c-pink)!important}
+.badge,.filters,.card,.toolbar-card,.kpi,.entry-card,.last-submission-panel,
+.entry-submit-bar,.entry-search-sort,.master-picker,.entry-popup,.app-download-mini{
+  background:linear-gradient(145deg,var(--c-card2),var(--c-card))!important;
+  border-color:var(--c-line)!important;
+  color:var(--c-text)!important;
+  box-shadow:0 10px 30px rgba(0,0,0,.20)!important;
+}
+.btn{background:var(--c-pink)!important;border-color:var(--c-pink)!important;color:#fff!important}
+.btn.secondary{background:#141414!important;border-color:#363636!important;color:#fff!important}
+.btn.secondary:hover,.btn:hover{filter:brightness(1.08)}
+.filter>label,.k-title,.entry-stat span,.entry-stat small,.entry-page-note,
+.entry-sort-note,.panel-note{color:var(--c-muted)!important}
+.filter select,.filter input,.multi-trigger,.multi-search,.search,.select,
+.entry-search-wrap input,.master-search,.entry-num{
+  background:#0a0a0a!important;color:#fff!important;border-color:#303030!important;
+}
+.filter select:focus,.filter input:focus,.multi-trigger:focus,.multi-search:focus,
+.search:focus,.select:focus,.entry-search-wrap input:focus,.master-search:focus{
+  border-color:var(--c-pink)!important;box-shadow:0 0 0 3px rgba(255,43,138,.10)!important;outline:none!important;
+}
+.multi-menu{background:#111!important;border-color:#303030!important;box-shadow:0 14px 34px rgba(0,0,0,.45)!important}
+.multi-option:hover{background:#181818!important}
+.multi-foot, .filter-head{border-color:var(--c-line)!important}
+.link,.link-btn{color:var(--c-pink2)!important}
+.k-value{color:#fff!important}
+.good .k-value,.positive{color:var(--c-green)!important}
+.bad .k-value,.negative{color:var(--c-red)!important}
+.seg{border-color:#303030!important;background:#0d0d0d!important}
+.seg button{background:#0d0d0d!important;color:#8d8d96!important}
+.seg button.active{background:var(--c-blue)!important;color:#fff!important}
+.chart{background:transparent!important}
+.table-wrap,.entry-table-wrap{border-color:var(--c-line)!important;background:#0d0d0d!important}
+table,.entry-table{background:#0d0d0d!important;color:#eee!important}
+th{background:#151515!important;color:#85858f!important;border-color:var(--c-line)!important}
+td{color:#e6e6e6!important;border-color:#202020!important}
+tr:hover td{background:#151515!important}
+.entry-table tbody tr:hover td{background:#151515!important}
+.entry-table th{background:#151515!important;color:#888!important}
+.entry-toolbar,.entry-submit-bar,.entry-search-sort{color:#fff!important}
+.entry-num{color:#fff!important}
+.entry-num:focus{border-color:var(--c-pink)!important}
+.last-sub-head,.last-sub-item,.entry-page-note{color:#fff!important}
+.last-sub-item{background:#101010!important;border-color:#282828!important}
+.last-sub-item.active{border-color:var(--c-pink)!important;background:rgba(255,43,138,.07)!important}
+.app-download-mini{color:#fff!important}
+.app-download-mini a,.app-download-mini button{background:#171717!important;color:#fff!important;border-color:#303030!important}
+.app-download-mini a{background:var(--c-pink)!important;border-color:var(--c-pink)!important}
+.sidebar-backdrop{background:rgba(0,0,0,.72)!important}
+.entry-loading-card,.app-install-card{background:#111!important;border-color:#303030!important;color:#fff!important}
+.entry-loading-title,.app-install-card h3{color:#fff!important}
+.entry-loading-text,.ios-steps p,.ios-note{color:#999!important}
+.entry-progress-track{background:#242424!important}
+.entry-progress-bar{background:linear-gradient(90deg,var(--c-pink),var(--c-pink2))!important}
+.entry-popup-overlay,.app-install-backdrop{background:rgba(0,0,0,.75)!important}
+.entry-popup-icon.good{background:rgba(66,211,146,.14)!important;color:var(--c-green)!important}
+.entry-popup-icon.bad{background:rgba(255,91,110,.14)!important;color:var(--c-red)!important}
+.footer{color:#62626a!important}
+.empty{color:#777!important}
+

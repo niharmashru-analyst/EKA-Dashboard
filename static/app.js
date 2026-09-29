@@ -48,8 +48,8 @@ function perfDetailTooltip(x){
     `<br>Stock: ${qty(x.Stock)}`;
 }
 function chart(id,opt,clickFn){let e=document.getElementById(id);if(!e)return;try{let old=echarts.getInstanceByDom(e);if(old)old.dispose();let c=echarts.init(e);c.setOption(opt,true);c.resize();if(clickFn)c.on('click',clickFn);charts.push(c)}catch(err){e.innerHTML='<div class="empty">Chart could not render.</div>'}}
-const palette=['#2563EB','#0EA5E9','#0F766E','#7C3AED','#D97706','#475569','#14B8A6','#DC2626'];
-const base={color:['#ff2d8d','#ff7ab8','#ffb3d6','#ffffff','#8b8b8b'],backgroundColor:'transparent',textStyle:{fontFamily:'Manrope',color:'#f7f7f7'},tooltip:{trigger:'axis',backgroundColor:'#111',borderColor:'#3a3a3a',textStyle:{color:'#fff'}},grid:{left:55,right:45,top:70,bottom:65,containLabel:true},axisLabel:{color:'#8b8b8b',fontSize:11},splitLine:{lineStyle:{color:'#252525'}}};
+const palette=['#ff2b8a','#2f63e6','#ff72b4','#8b8b8b','#ffffff','#6f96ff','#cfcfd4','#ff5b6e'];
+const base={color:['#ff2b8a','#2f63e6','#ff72b4','#ffffff','#8b8b8b','#6f96ff','#cfcfd4','#ff5b6e'],backgroundColor:'transparent',textStyle:{fontFamily:'Manrope',color:'#f7f7f7'},tooltip:{trigger:'axis',backgroundColor:'#111',borderColor:'#303030',textStyle:{color:'#fff'}},grid:{left:55,right:45,top:70,bottom:65,containLabel:true},axisLabel:{color:'#8b8b8b',fontSize:11},splitLine:{lineStyle:{color:'#252525'}}};
 function apply(){
   let q=(filters.__q||'').toLowerCase();
   const selectedSkus=new Set(filters[SKU_FILTER_KEY]||[]);

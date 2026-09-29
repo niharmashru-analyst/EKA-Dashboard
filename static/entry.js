@@ -111,7 +111,7 @@ async function loadMeta() {
       $('continueEntry').disabled = true;
     }
     $('continueEntry').disabled = !selectedStore;
-    msg(`Email verified. ${stores.length} shop(s) mapped.`, true);
+    msg(`${stores.length} shop(s) mapped to your signed-in account.`, true);
     await loadLastSubmissions();
   } catch (e) {
     msg(e.message);
@@ -480,6 +480,12 @@ function downloadVariancePdf() {
 
 $('email').addEventListener('blur', loadMeta);
 $('email').addEventListener('keydown', e => { if (e.key === 'Enter') loadMeta(); });
+
+// The authenticated session already contains the user's email.
+// Fetch its mapped shops automatically; no second email confirmation is required.
+if ($('email') && $('email').value.trim()) {
+  loadMeta();
+}
 $('store').onchange = () => { selectedStore=$('store').value||''; $('continueEntry').disabled=!selectedStore; loadLastSubmissions(); };
 $('continueEntry').onclick = loadSku;
 $('syncData').onclick = syncData;
