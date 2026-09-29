@@ -3,15 +3,6 @@
     "nihar.mashru@reneecosmetics.in": {
       "shops": [
         {
-          "code": "S001",
-          "name": "Srinagar Airport",
-          "status": "Active"
-        }
-      ]
-    },
-    "nihar@reneecosmetics.in": {
-      "shops": [
-        {
           "code": "M002",
           "name": "Mumbai Airport",
           "status": "Active"
