@@ -34,6 +34,7 @@
   }
   async function getJson(url, options = {}) {
     const r = await fetch(url, { cache: 'no-store', ...options });
+    if(r.status===401){location.href='/login?next='+encodeURIComponent(location.pathname+location.search);throw Error('Your session expired. Redirecting to sign-in...')}
     let j;
     try { j = await r.json(); } catch (_) { throw Error(`Server returned HTTP ${r.status}`); }
     if (!r.ok || !j.ok) throw Error(j.error || `Request failed (${r.status})`);

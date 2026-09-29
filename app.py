@@ -1,10 +1,12 @@
-import io, os, time, json, sqlite3, functools
+import io, os, time, json, sqlite3, functools, logging, math, threading, secrets, hmac
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import requests
 import pandas as pd
 import re
 from flask import Flask, jsonify, render_template, request, Response, session, redirect
+from werkzeug.middleware.proxy_fix import ProxyFix
+from werkzeug.security import check_password_hash, generate_password_hash
 
 app = Flask(__name__)
 SECRET_KEY = os.getenv("SECRET_KEY", "").strip()
@@ -16,6 +18,90 @@ DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@cormate.com").strip().lower()
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "").strip()
 USERS_JSON_PATH = os.getenv("USERS_JSON_PATH", os.path.join(app.root_path, "data", "users.json")).strip()
+
+# -----------------------------------------------------------------------------
+# Infrastructure: logging, proxy trust, session lifetime, locks, error helpers
+# -----------------------------------------------------------------------------
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper(), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+log = app.logger
+if os.getenv("TRUST_PROXY", "1").strip().lower() not in {"0", "false", "no"}:
+    # Render/most PaaS terminate TLS in a proxy; this makes request.host/scheme/remote_addr correct.
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+app.config.update(
+    PERMANENT_SESSION_LIFETIME=timedelta(hours=float(os.getenv("SESSION_HOURS", "12"))),
+    MAX_CONTENT_LENGTH=int(os.getenv("MAX_UPLOAD_MB", "5")) * 1024 * 1024,
+)
+
+# The data caches are module-level and gunicorn runs several threads. Without a lock,
+# simultaneous requests all re-download the workbook (cache stampede) and share one
+# non-thread-safe pandas.ExcelFile. Separate locks keep the fast mapping path unblocked.
+_data_lock = threading.RLock()
+_map_lock = threading.RLock()
+_inward_lock = threading.RLock()
+
+def _locked(lock):
+    def deco(fn):
+        @functools.wraps(fn)
+        def wrapped(*a, **kw):
+            with lock:
+                return fn(*a, **kw)
+        return wrapped
+    return deco
+
+
+class BadInput(ValueError):
+    """Client sent something invalid; safe to show the message (HTTP 400)."""
+
+
+def _fail(e, status=500):
+    """Uniform JSON error. Deliberate RuntimeErrors (config/data problems) keep their message;
+    anything unexpected is logged in full and reported generically, so internals never leak."""
+    if isinstance(e, BadInput):
+        return jsonify({"ok": False, "error": str(e)}), 400
+    log.exception("Unhandled error on %s %s", request.method, request.path)
+    msg = str(e) if isinstance(e, RuntimeError) else "Something went wrong on the server. Please try again."
+    return jsonify({"ok": False, "error": msg}), status
+
+
+MAX_SUBMIT_ROWS = int(os.getenv("MAX_SUBMIT_ROWS", "3000"))
+MAX_QTY = 1_000_000
+
+def _qty_in(v):
+    """Parse a user-entered quantity. Blank -> 0. Rejects NaN/inf/garbage; clamps negatives to 0."""
+    if v is None or (isinstance(v, str) and not v.strip()):
+        return 0.0
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        raise BadInput("Quantities must be valid numbers.")
+    if not math.isfinite(f) or f > MAX_QTY:
+        raise BadInput(f"Quantities must be finite numbers no larger than {MAX_QTY:,}.")
+    return max(0.0, f)
+
+
+def _norm_ean(series):
+    """Excel often stores EANs as numbers ('8901234567890.0'); normalise so joins never silently miss."""
+    return series.fillna("").astype(str).str.strip().str.replace(r"\.0+$", "", regex=True)
+
+
+def _csv_safe(df):
+    """Neutralise spreadsheet formula injection in text cells of CSV exports."""
+    out = df.copy()
+    for c in out.columns:
+        if not (pd.api.types.is_numeric_dtype(out[c]) or pd.api.types.is_bool_dtype(out[c])):  # object (pandas 2) or str (pandas 3)
+            out[c] = out[c].map(lambda v: "'" + v if isinstance(v, str) and v[:1] in ("=", "+", "-", "@", "\t", "\r") else v)
+    return out
+
+
+@app.context_processor
+def _asset_helpers():
+    # Automatic cache-busting from file mtime (replaces hand-bumped ?v=NN, which had drifted between pages).
+    def asset_v(name):
+        try:
+            return int(os.path.getmtime(os.path.join(app.static_folder, name)))
+        except OSError:
+            return 0
+    return {"asset_v": asset_v}
 
 @app.after_request
 def compress_response(response):
@@ -39,10 +125,36 @@ def compress_response(response):
 
 @app.after_request
 def security_headers(response):
-    response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
-    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    h = response.headers
+    h.setdefault("X-Content-Type-Options", "nosniff")
+    h.setdefault("X-Frame-Options", "SAMEORIGIN")
+    h.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    h.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    if app.config.get("SESSION_COOKIE_SECURE"):
+        h.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    if response.mimetype == "text/html":
+        h["Cache-Control"] = "no-store"  # authenticated pages must not be served from a shared/back-button cache
     return response
+
+
+@app.before_request
+def csrf_guard():
+    """Reject cross-site state-changing requests. Browsers always send Origin/Sec-Fetch-Site on
+    cross-site POSTs; same-origin fetches and non-browser clients are unaffected."""
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return None
+    origin = request.headers.get("Origin")
+    if origin and origin != "null" and urlparse(origin).netloc != request.host:
+        return jsonify({"ok": False, "error": "Cross-site request blocked."}), 403
+    if request.headers.get("Sec-Fetch-Site") == "cross-site":
+        return jsonify({"ok": False, "error": "Cross-site request blocked."}), 403
+    return None
+
+
+@app.get("/healthz")
+def healthz():
+    return jsonify({"ok": True})
+
 EXCEL_URL = os.getenv("EXCEL_URL", "").strip()
 EXCEL_SHEET = os.getenv("EXCEL_SHEET", "Stock_Data").strip()
 VARIANCE_EXCEL_URL = os.getenv("VARIANCE_EXCEL_URL", "").strip()
@@ -129,11 +241,13 @@ def clean_stock(df):
     if "Current Month Value" not in df.columns: df["Current Month Value"] = 0
     for c in STOCK_OPTIONAL_METRICS: df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
     for c in ["Type","Store Name","EAN Code","Product Name","Pareto"]: df[c] = df[c].fillna("").astype(str).str.strip()
+    df["EAN Code"] = _norm_ean(df["EAN Code"])
     df["Forecast Months"] = df["Pareto"].map({"Top 10":2.0,"Top 25":1.5,"Others":1.0}).fillna(1.0)
     df["Forecast Qty"] = df["L3M Avg Qty"] * df["Forecast Months"]
     # NOD is always calculated from current stock and L3M average sales; never use average NOD.
     # Vectorized calculation keeps refreshes fast even as the workbook grows.
-    df["NOD"] = (df["Stock"] * 31.0).div(df["L3M Avg Qty"].replace(0, pd.NA)).fillna(0)
+    # (.where -> NaN keeps the column float; the old replace(0, pd.NA) silently produced an object column.)
+    df["NOD"] = (df["Stock"] * 31.0).div(df["L3M Avg Qty"].where(df["L3M Avg Qty"] > 0)).fillna(0.0).astype(float)
     if "Ideal Stock" not in df.columns: df["Ideal Stock"] = df["Forecast Qty"]
     else: df["Ideal Stock"] = pd.to_numeric(df["Ideal Stock"], errors="coerce").fillna(df["Forecast Qty"])
     if "Status" not in df.columns: df["Status"] = ""
@@ -149,10 +263,12 @@ def clean_variance(df):
     if missing: raise RuntimeError("Variance_Data missing required columns: " + ", ".join(missing))
     for c in VAR_REQUIRED[3:]: df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
     for c in ["Store Name","EAN Code","Product Name"]: df[c] = df[c].fillna("").astype(str).str.strip()
+    df["EAN Code"] = _norm_ean(df["EAN Code"])
     df["Calculated Closing Qty"] = df["Opening Stock Qty"] + df["Inward Qty"] - df["Tertiary Qty"]
-    # Stock Variance compares the movement-derived closing stock with the
-    # Closing Stock Qty supplied in Variance_Data. Positive = Closing Stock
-    # Qty is higher than the calculated closing; negative = lower.
+    # Stock Variance = movement-derived closing (Opening + Inward - Tertiary) minus the
+    # Closing Stock Qty supplied in Variance_Data.
+    # Positive = calculated closing is HIGHER than the reported closing (units unaccounted for / shortfall);
+    # negative = reported closing is higher than the movements explain.
     df["Stock Variance Qty"] = df["Calculated Closing Qty"] - df["Closing Stock Qty"]
     return df
 
@@ -171,9 +287,11 @@ def clean_master(df):
     missing = [c for c in MASTER_REQUIRED if c not in df.columns]
     if missing: raise RuntimeError("SKU_Master missing required columns: " + ", ".join(missing))
     for c in MASTER_REQUIRED: df[c] = df[c].fillna("").astype(str).str.strip()
+    df["EAN Code"] = _norm_ean(df["EAN Code"])
     return df[df["EAN Code"]!=""].drop_duplicates(subset=["EAN Code"], keep="first")
 
 
+@_locked(_data_lock)
 def load_stock(force=False):
     now=time.time()
     if force or _cache["stock_df"] is None or now-_cache["stock_ts"]>=CACHE_SECONDS:
@@ -247,6 +365,7 @@ def clean_json_map(payload):
     return pd.DataFrame(records).drop_duplicates(subset=["Email ID", "Store Name"], keep="first")
 
 
+@_locked(_map_lock)
 def load_mapping(force=False):
     """Load the lightweight JSON mapping. This is the fast path for Entry email/shop lookup."""
     now = time.time()
@@ -287,6 +406,7 @@ def load_mapping(force=False):
     return mp.copy()
 
 
+@_locked(_data_lock)
 def load_master(force=False):
     now = time.time()
     if not force and _cache.get("master_df") is not None and now - _cache.get("master_ts", 0) < CACHE_SECONDS:
@@ -321,6 +441,8 @@ def load_submissions_live():
             return pd.DataFrame(result.get("records", []))
         return load_local_submissions()
     except Exception:
+        # Never hide this: an unreachable submission service makes variance silently show "no submissions".
+        log.exception("Could not load field submissions; variance will exclude them")
         return pd.DataFrame()
 
 def merge_variance_actuals(var, stock):
@@ -377,7 +499,7 @@ def merge_variance_actuals(var, stock):
             subs[c] = default
     subs = subs.copy()
     subs["__key"] = (subs["store_name"].fillna("").astype(str).str.strip() + "|" +
-                      subs["ean_code"].fillna("").astype(str).str.strip())
+                      _norm_ean(subs["ean_code"]))
     subs["total"] = pd.to_numeric(subs["total"], errors="coerce").fillna(0)
     subs = subs.sort_values("submitted_at", kind="stable").drop_duplicates("__key", keep="last")
     sub_map = subs.set_index("__key")["total"] if not subs.empty else pd.Series(dtype=float)
@@ -426,6 +548,7 @@ def merge_variance_actuals(var, stock):
     out = out.drop(columns=[c for c in ["__key", "Movement Check Qty", "Movement Check"] if c in out.columns], errors="ignore")
     return out
 
+@_locked(_data_lock)
 def load_variance(force=False):
     now=time.time(); url=VARIANCE_EXCEL_URL or EXCEL_URL
     if force or _cache["var_df"] is None or now-_cache["var_ts"]>=CACHE_SECONDS:
@@ -530,37 +653,6 @@ def _ai_num(v):
         return 0 if pd.isna(x) else x
     except Exception:
         return 0
-
-def _ai_prepare_stock(df, view_mode="qty"):
-    if df is None or df.empty:
-        return pd.DataFrame()
-    x=df.copy()
-    # Excel/source files can occasionally contain duplicate header names.
-    # Pandas returns a DataFrame (instead of a Series) for duplicate columns,
-    # which breaks to_json(orient="records") and several aggregations below.
-    # Keep the first occurrence consistently for the AI context.
-    x=x.loc[:, ~x.columns.duplicated()].copy()
-    for c in ["Stock","L3M Avg Qty","LY Qty","Current Month Qty","Total MRP Value","L3M Avg Value","LY Value","Current Month Value"]:
-        if c in x.columns: x[c]=pd.to_numeric(x[c],errors="coerce").fillna(0)
-    if "Growth %" not in x.columns:
-        x["Growth %"]=x.apply(lambda r: ((r.get("Current Month Qty",0)-r.get("LY Qty",0))/r.get("LY Qty",1)*100) if r.get("LY Qty",0)>0 else None,axis=1)
-    x["NOD"]=x.apply(lambda r: (r.get("Stock",0)*31/r.get("L3M Avg Qty",1)) if r.get("L3M Avg Qty",0)>0 else 0,axis=1)
-    return x
-
-def _ai_filter_stock(df, payload):
-    x=df.copy()
-    filters=payload.get("filters") or {}
-    for c in ["Type","Store Name","Pareto","NOD Bucket","Stock Health"]:
-        vals=filters.get(c) or []
-        if vals and c in x.columns: x=x[x[c].astype(str).isin([str(v) for v in vals])]
-    skus=filters.get("__sku") or []
-    if skus and "EAN Code" in x.columns: x=x[x["EAN Code"].astype(str).str.strip().isin([str(v).strip() for v in skus])]
-    q=str(filters.get("__q") or "").strip().lower()
-    if q:
-        mask=x["EAN Code"].astype(str).str.lower().str.contains(q,na=False) if "EAN Code" in x.columns else False
-        if "Product Name" in x.columns: mask=mask|x["Product Name"].astype(str).str.lower().str.contains(q,na=False)
-        x=x[mask]
-    return x
 
 def _ai_clean_columns(df):
     if df is None or df.empty:
@@ -733,18 +825,23 @@ def _user_record(email):
     rec = _load_users_config().get("users", {}).get(email)
     return rec if isinstance(rec, dict) else None
 
+_DUMMY_HASH = generate_password_hash(secrets.token_hex(8))
+_HEX64 = re.compile(r"^[0-9a-f]{64}$")
+
 def _check_password(rec, password):
-    if not rec: return False
+    """Verify against a salted werkzeug hash (preferred), a legacy bare SHA-256 hex digest, or plaintext.
+    Unknown users still burn one hash computation so response time does not reveal which emails exist."""
+    if not rec:
+        check_password_hash(_DUMMY_HASH, password)
+        return False
     stored_hash = str(rec.get("password_hash", "")).strip()
     if stored_hash:
-        try:
-            from werkzeug.security import check_password_hash
-            return check_password_hash(stored_hash, password)
-        except Exception:
-            import hashlib, hmac
-            return hmac.compare_digest(hashlib.sha256(password.encode("utf-8")).hexdigest(), stored_hash)
-    import hmac
-    return hmac.compare_digest(str(rec.get("password", "")), password)
+        if _HEX64.match(stored_hash.lower()):
+            # Legacy unsalted digest. (werkzeug rejects this format, so it never verified before.)
+            import hashlib
+            return hmac.compare_digest(hashlib.sha256(password.encode("utf-8")).hexdigest(), stored_hash.lower())
+        return check_password_hash(stored_hash, password)
+    return hmac.compare_digest(str(rec.get("password", "")).encode("utf-8"), password.encode("utf-8"))
 
 def _is_admin(email, password=None):
     email = str(email or "").strip().lower()
@@ -752,8 +849,7 @@ def _is_admin(email, password=None):
         return False
     if password is None:
         return bool(session.get("is_admin"))
-    import hmac
-    return bool(ADMIN_PASSWORD) and hmac.compare_digest(password, ADMIN_PASSWORD)
+    return bool(ADMIN_PASSWORD) and hmac.compare_digest(password.encode("utf-8"), ADMIN_PASSWORD.encode("utf-8"))
 
 def _has_access(page):
     if session.get("is_admin"):
@@ -761,10 +857,33 @@ def _has_access(page):
     access = session.get("access", []) or []
     return page in access
 
+_VALID_ACCESS = {"stock_entry", "dashboard"}
+
+def _normalized_access(rec):
+    access = rec.get("access", [])
+    if isinstance(access, str):
+        access = [access]
+    return [a for a in (str(x).strip().lower() for x in access) if a in _VALID_ACCESS]
+
+def _is_active(rec):
+    return str(rec.get("status", "Active") or "Active").strip().lower() in {"active", "enabled"}
+
+def _revalidate_session():
+    """Disabling or removing a user in users.json takes effect on their very next request,
+    instead of staying valid until the cookie expires."""
+    if not session.get("user_email") or session.get("is_admin"):
+        return
+    rec = _user_record(session.get("user_email"))
+    if not rec or not _is_active(rec):
+        session.clear()
+        return
+    session["access"] = _normalized_access(rec)
+
 def require_access(page):
     def deco(fn):
         @functools.wraps(fn)
         def wrapped(*args, **kwargs):
+            _revalidate_session()
             if not session.get("user_email"):
                 if request.path.startswith("/api/"):
                     return jsonify({"ok": False, "error": "Authentication required."}), 401
@@ -778,6 +897,13 @@ def require_access(page):
     return deco
 
 
+def _allowed_stores(email, mp=None):
+    """Stores this session may act on: an admin sees every mapped store, others only their own."""
+    mp = load_mapping(False) if mp is None else mp
+    if session.get("is_admin"):
+        return set(mp["Store Name"].astype(str).str.strip())
+    return set(mp.loc[mp["Email ID"] == email, "Store Name"].astype(str).str.strip())
+
 def _enforce_identity(email):
     email = str(email or "").strip().lower()
     if session.get("is_admin"):
@@ -789,11 +915,50 @@ def _access_destinations():
         return ["stock_entry", "dashboard", "admin"]
     return list(session.get("access", []) or [])
 
+_LOGIN_FAILS = {}
+_LOGIN_LOCK = threading.Lock()
+LOGIN_MAX_FAILS = int(os.getenv("LOGIN_MAX_FAILS", "5"))        # per (ip, email)
+LOGIN_MAX_FAILS_IP = int(os.getenv("LOGIN_MAX_FAILS_IP", "30"))  # per ip, any email
+LOGIN_WINDOW = int(os.getenv("LOGIN_WINDOW_SECONDS", "900"))
+
+def _login_keys(email):
+    ip = request.remote_addr or "?"
+    return f"pair:{ip}|{email}", f"ip:{ip}"
+
+def _login_blocked(email):
+    now = time.time()
+    with _LOGIN_LOCK:
+        if len(_LOGIN_FAILS) > 10000:
+            _LOGIN_FAILS.clear()
+        pair, ip = _login_keys(email)
+        for k in (pair, ip):
+            _LOGIN_FAILS[k] = [t for t in _LOGIN_FAILS.get(k, []) if now - t < LOGIN_WINDOW]
+        return len(_LOGIN_FAILS[pair]) >= LOGIN_MAX_FAILS or len(_LOGIN_FAILS[ip]) >= LOGIN_MAX_FAILS_IP
+
+def _login_failed(email):
+    now = time.time()
+    with _LOGIN_LOCK:
+        for k in _login_keys(email):
+            _LOGIN_FAILS.setdefault(k, []).append(now)
+
+def _login_succeeded(email):
+    with _LOGIN_LOCK:
+        _LOGIN_FAILS.pop(_login_keys(email)[0], None)
+
+def _safe_next(value):
+    """Only same-site relative paths; blocks open redirects like //evil.com or /\\evil.com or https://..."""
+    v = str(value or "").strip()
+    if not v.startswith("/") or v.startswith("//") or v.startswith("/\\") or "\n" in v or "\r" in v:
+        return ""
+    if v.split("?")[0] in {"/login", "/logout"}:
+        return ""
+    return v
+
 @app.get("/login")
 def login_page():
     if session.get("user_email"):
-        return redirect(_destination_for_access())
-    return render_template("login.html", next_url=request.args.get("next", ""))
+        return redirect(_safe_next(request.args.get("next")) or _destination_for_access())
+    return render_template("login.html", next_url=_safe_next(request.args.get("next")))
 
 def _destination_for_access():
     access = _access_destinations()
@@ -808,40 +973,44 @@ def login():
     payload = request.get_json(silent=True) or request.form
     email = str(payload.get("email", "")).strip().lower()
     password = str(payload.get("password", ""))
+    nxt = _safe_next(payload.get("next"))
     if not email or not password:
         return jsonify({"ok": False, "error": "Email and password are required."}), 400
+    if _login_blocked(email):
+        resp = jsonify({"ok": False, "error": "Too many failed attempts. Please wait a few minutes and try again."})
+        resp.status_code = 429
+        resp.headers["Retry-After"] = str(LOGIN_WINDOW)
+        return resp
 
     if _is_admin(email, password):
+        _login_succeeded(email)
         session.clear()
+        session.permanent = True
         session["user_email"] = email
         session["user_name"] = "Admin"
         session["is_admin"] = True
         session["access"] = ["stock_entry", "dashboard", "admin"]
-        return jsonify({"ok": True, "redirect": "/choose"})
+        return jsonify({"ok": True, "redirect": nxt or "/choose"})
 
     rec = _user_record(email)
-    if not rec or not _check_password(rec, password):
+    if not _check_password(rec, password):
+        _login_failed(email)
         return jsonify({"ok": False, "error": "Incorrect email or password."}), 401
 
-    status = str(rec.get("status", "Active")).strip().lower()
-    if status and status not in {"active", "enabled"}:
+    if not _is_active(rec):
         return jsonify({"ok": False, "error": "Your account is inactive. Please contact the administrator."}), 403
-
-    access = rec.get("access", [])
-    if isinstance(access, str):
-        access = [access]
-    access = [str(x).strip().lower() for x in access if str(x).strip()]
-    valid = {"stock_entry", "dashboard"}
-    access = [x for x in access if x in valid]
+    access = _normalized_access(rec)
     if not access:
         return jsonify({"ok": False, "error": "Your account has no active access assigned."}), 403
 
+    _login_succeeded(email)
     session.clear()
+    session.permanent = True
     session["user_email"] = email
     session["user_name"] = str(rec.get("name", email.split("@")[0]))
     session["is_admin"] = False
     session["access"] = access
-    return jsonify({"ok": True, "redirect": _destination_for_access()})
+    return jsonify({"ok": True, "redirect": nxt or _destination_for_access()})
 
 @app.post("/api/ai/chat")
 @require_access("dashboard")
@@ -882,7 +1051,7 @@ def ai_chat():
         if not text:text="I couldn't generate an answer from the available dashboard data."
         return jsonify({"ok":True,"answer":text,"view_mode":payload.get("view_mode") or "qty"})
     except Exception as e:
-        return jsonify({"ok":False,"error":str(e)}),500
+        return _fail(e)
 
 @app.get("/choose")
 def choose():
@@ -1007,7 +1176,11 @@ def admin():
 @app.get("/")
 @require_access("dashboard")
 def index():
-    return render_template("index.html")
+    # Preserve the user's previous workspace so Dashboard always provides a clear way back.
+    from_entry = str(request.args.get("from", "")).strip().lower() == "entry"
+    back_href = "/entry" if from_entry else "/choose"
+    back_label = "← Back to Physical Stock Entry" if from_entry else "← Back to Workspace"
+    return render_template("index.html", back_href=back_href, back_label=back_label)
 
 @app.get("/download")
 @app.get("/app")
@@ -1027,7 +1200,7 @@ def api_data():
         resp.headers["Cache-Control"]="no-store, no-cache, must-revalidate, max-age=0"
         resp.headers["Pragma"]="no-cache"
         return resp
-    except Exception as e: return jsonify({"ok":False,"error":str(e)}),500
+    except Exception as e: return _fail(e)
 
 @app.get("/api/variance")
 @require_access("dashboard")
@@ -1040,7 +1213,7 @@ def api_variance():
         resp.headers["Cache-Control"]="no-store, no-cache, must-revalidate, max-age=0"
         resp.headers["Pragma"]="no-cache"
         return resp
-    except Exception as e: return jsonify({"ok":False,"error":str(e)}),500
+    except Exception as e: return _fail(e)
 
 @app.post("/api/data/sync")
 @require_access("stock_entry")
@@ -1052,7 +1225,7 @@ def data_sync():
         if not _enforce_identity(email):
             return jsonify({"ok": False, "error": "The submitted email does not match the signed-in account."}), 403
         mp = load_mapping(True)
-        if email and email not in set(mp["Email ID"].astype(str).str.lower()):
+        if email and not session.get("is_admin") and email not in set(mp["Email ID"].astype(str).str.lower()):
             return jsonify({"ok": False, "error": "Email ID is not mapped to any shop."}), 403
         stock = load_stock(True)
         master = load_master(True)
@@ -1065,7 +1238,7 @@ def data_sync():
             inward_error = str(e)
         return jsonify({"ok": True, "message": "Data refreshed successfully.", "mapping_rows": int(len(mp)), "stock_rows": int(len(stock)), "master_rows": int(len(master)), "inward_rows": inward_rows, "inward_error": inward_error, "synced_at": datetime.now(timezone.utc).isoformat()})
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _fail(e)
 
 @app.get("/api/entry-meta")
 @require_access("stock_entry")
@@ -1079,7 +1252,7 @@ def entry_meta():
         # Fast path: email -> mapped shops comes entirely from mapping.json.
         # This request does NOT download/read the large Excel workbook.
         mp=load_mapping(False)
-        stores=sorted(mp.loc[mp["Email ID"]==email,"Store Name"].unique().tolist()) if email else []
+        stores=sorted(_allowed_stores(email,mp)) if email else []
         if email and not stores:
             return jsonify({"ok":False,"error":"Email ID is not mapped to any shop."}),404
         if store and store not in stores and not session.get("is_admin"):
@@ -1096,18 +1269,18 @@ def entry_meta():
 
         return jsonify({"ok":True,"stores":stores,"selected_store":store,"available_skus":available,"master_skus":master_skus,"mapping_source":_cache.get("map_source",""),"mapped_email":email})
     except Exception as e:
-        return jsonify({"ok":False,"error":str(e)}),500
+        return _fail(e)
 
 @app.post("/api/submit")
 @require_access("stock_entry")
 def submit():
     try:
-        payload=request.get_json(force=True); email=str(payload.get("email","")).strip().lower(); store=str(payload.get("store_name","")).strip(); rows=payload.get("rows",[])
+        payload=request.get_json(force=True) or {}; email=str(payload.get("email","")).strip().lower(); store=str(payload.get("store_name","")).strip(); rows=payload.get("rows",[])
+        if not isinstance(rows,list) or len(rows)>MAX_SUBMIT_ROWS: raise BadInput(f"Submit between 1 and {MAX_SUBMIT_ROWS} SKU rows.")
         if not _enforce_identity(email): return jsonify({"ok":False,"error":"The submitted email does not match the signed-in account."}),403
         if not email or not store or not rows: return jsonify({"ok":False,"error":"Email, shop and at least one SKU are required."}),400
         mp,master=load_entry_sources(False)
-        allowed=set(mp.loc[mp["Email ID"]==email,"Store Name"])
-        if store not in allowed: return jsonify({"ok":False,"error":"This email is not mapped to the selected shop."}),403
+        if store not in _allowed_stores(email,mp): return jsonify({"ok":False,"error":"This email is not mapped to the selected shop."}),403
         stock=load_stock(False)
         master_map={str(x["EAN Code"]).strip():str(x["Product Name"]) for _,x in master.iterrows()}
         # Current-store SKUs are valid even if the master file is temporarily missing one.
@@ -1119,8 +1292,8 @@ def submit():
             if not ean: continue
             product_name=master_map.get(ean) or store_map.get(ean) or str(r.get("Product Name","" )).strip()
             if not product_name: continue
-            stock_qty=max(0.0,float(r.get("Stock",0) or 0))
-            tester_qty=max(0.0,float(r.get("Tester",0) or 0))
+            stock_qty=_qty_in(r.get("Stock"))
+            tester_qty=_qty_in(r.get("Tester"))
             cleaned.append({"EAN Code":ean,"Product Name":product_name,"Stock":stock_qty,"Tester":tester_qty,"Total":stock_qty+tester_qty})
         if not cleaned: return jsonify({"ok":False,"error":"No valid SKU rows submitted."}),400
         payload={"email":email,"store_name":store,"rows":cleaned}
@@ -1134,7 +1307,7 @@ def submit():
             return jsonify({"ok":True,"message":"Stock submitted successfully.","saved_rows":saved,"remote":result})
         saved=save_local_submission(payload)
         return jsonify({"ok":True,"message":"Stock submitted successfully.","saved_rows":saved})
-    except Exception as e: return jsonify({"ok":False,"error":str(e)}),500
+    except Exception as e: return _fail(e)
 
 @app.post("/api/entry-report-data")
 @require_access("stock_entry")
@@ -1146,12 +1319,12 @@ def entry_report_data():
         if not _enforce_identity(email): return jsonify({"ok":False,"error":"The submitted email does not match the signed-in account."}),403
         store=str(payload.get("store_name","")).strip()
         rows=payload.get("rows",[]) or []
+        if not isinstance(rows,list) or len(rows)>MAX_SUBMIT_ROWS: raise BadInput(f"Submit at most {MAX_SUBMIT_ROWS} SKU rows.")
         if not email or not store:
             return jsonify({"ok":False,"error":"Email and shop are required."}),400
 
         mp,_=load_entry_sources(False)
-        allowed=set(mp.loc[mp["Email ID"]==email,"Store Name"])
-        if store not in allowed:
+        if store not in _allowed_stores(email,mp):
             return jsonify({"ok":False,"error":"This email is not mapped to the selected shop."}),403
 
         stock=load_stock(False)
@@ -1162,9 +1335,9 @@ def entry_report_data():
         for r in rows:
             ean=str(r.get("EAN Code","")).strip()
             if not ean: continue
-            physical=max(0.0,float(r.get("Total",0) or 0))
+            physical=_qty_in(r.get("Total"))
             name=str(r.get("Product Name","")).strip()
-            submitted[ean]={"Product Name":name,"Physical Stock":physical,"Stock Qty":max(0.0,float(r.get("Stock",0) or 0)),"Tester Qty":max(0.0,float(r.get("Tester",0) or 0))}
+            submitted[ean]={"Product Name":name,"Physical Stock":physical,"Stock Qty":_qty_in(r.get("Stock")),"Tester Qty":_qty_in(r.get("Tester"))}
 
         st=stock[stock["Store Name"].astype(str).str.strip()==store].copy()
         st["EAN Code"]=st["EAN Code"].astype(str).str.strip()
@@ -1205,7 +1378,7 @@ def entry_report_data():
 
         return jsonify({"ok":True,"store":store,"email":email,"rows":report})
     except Exception as e:
-        return jsonify({"ok":False,"error":str(e)}),500
+        return _fail(e)
 
 # ======================================================================
 # Inward Validation - Invoice/Document based, line-level validation
@@ -1398,6 +1571,7 @@ def _parse_inward(data, kind):
     raise RuntimeError("Could not find the required inward columns. Required: Document No./InvoiceNumber and Quantity/Sales Qty. First row seen -> " + (" | ".join(seen) or "sheet is empty"))
 
 
+@_locked(_inward_lock)
 def load_inward(force=False):
     key = INWARD_EXCEL_URL or "local"
     if not force and _inward_cache["df"] is not None and _inward_cache["key"] == key and time.time() - _inward_cache["ts"] < INWARD_CACHE_SECONDS:
@@ -1498,7 +1672,7 @@ def inward_sync():
             "message": "Excel data refreshed successfully."
         })
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _fail(e)
 
 
 @app.get("/api/inward/fetch")
@@ -1522,7 +1696,7 @@ def inward_fetch():
         resp = jsonify({"ok": True, "po": label, "matched_by": by, "mode": mode, "labels": _inward_labels(mode), "meta": meta, "source": source, "headers": INWARD_OUTPUT_HEADERS, "rows": lines, "master_skus": master_skus})
         resp.headers["Cache-Control"] = "no-store"
         return resp
-    except Exception as e: return jsonify({"ok": False, "error": str(e)}), 500
+    except Exception as e: return _fail(e)
 
 
 @app.post("/api/inward/submit")
@@ -1586,7 +1760,7 @@ def inward_submit():
 
         saved = save_remote_inward(email, label, rows) if INWARD_SUBMISSION_API_URL else save_local_inward(email, label, rows)
         return jsonify({"ok": True, "po": label, "mode": mode, "labels": _inward_labels(mode), "headers": INWARD_OUTPUT_HEADERS, "saved_rows": saved, "rows": rows, "submitted_at": datetime.now(timezone.utc).isoformat()})
-    except Exception as e: return jsonify({"ok": False, "error": str(e)}), 500
+    except Exception as e: return _fail(e)
 
 @app.get("/api/submissions")
 @require_access("stock_entry")
@@ -1607,8 +1781,8 @@ def submissions():
         df["store_name"] = df["store_name"].fillna("").astype(str).str.strip()
         df = df[df["store_name"].isin(mapped)].copy()
         return jsonify({"ok": True, "records": json_records(df)})
-    except Exception:
-        return jsonify({"ok":False,"error":"Could not load submissions."}),500
+    except Exception as e:
+        return _fail(e)
 
 
 @app.get("/api/last-submissions")
@@ -1670,7 +1844,7 @@ def last_submissions():
             })
         return jsonify({"ok": True, "records": out})
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _fail(e)
 
 @app.get("/api/export")
 @require_access("dashboard")
@@ -1680,8 +1854,8 @@ def export():
         for col in ["Type","Store Name","Pareto","Product Name","EAN Code"]:
             vals=request.args.getlist(col)
             if vals: stock=stock[stock[col].isin(vals)]
-        return Response(stock.to_csv(index=False),mimetype="text/csv",headers={"Content-Disposition":"attachment; filename=stock_dashboard.csv"})
-    except Exception as e: return jsonify({"ok":False,"error":str(e)}),500
+        return Response(_csv_safe(stock).to_csv(index=False),mimetype="text/csv",headers={"Content-Disposition":"attachment; filename=stock_dashboard.csv"})
+    except Exception as e: return _fail(e)
 
 @app.get("/api/variance-export")
 @require_access("dashboard")
@@ -1693,5 +1867,18 @@ def variance_export():
             q=request.args.get("sku").lower(); df=df[df["EAN Code"].str.lower().str.contains(q,na=False) | df["Product Name"].str.lower().str.contains(q,na=False)]
         if request.args.get("issues")=="1":
             df=df[(df["Stock Variance Qty"].abs()>0) | (df["Live Submission"] & (df["Difference Qty"].abs()>0))]
-        return Response(df.to_csv(index=False),mimetype="text/csv",headers={"Content-Disposition":"attachment; filename=variance_analysis.csv"})
-    except Exception as e: return jsonify({"ok":False,"error":str(e)}),500
+        return Response(_csv_safe(df).to_csv(index=False),mimetype="text/csv",headers={"Content-Disposition":"attachment; filename=variance_analysis.csv"})
+    except Exception as e: return _fail(e)
+
+
+def _startup_checks():
+    if not ADMIN_PASSWORD:
+        log.warning("ADMIN_PASSWORD is not set: the admin login is disabled.")
+    try:
+        plain = [e for e, r in _load_users_config().get("users", {}).items() if r.get("password") and not r.get("password_hash")]
+        if plain:
+            log.warning("%d user(s) in users.json use plaintext passwords. Run tools/hash_password.py and store password_hash instead.", len(plain))
+    except Exception:
+        log.exception("Could not read users.json at startup")
+
+_startup_checks()
