@@ -78,7 +78,6 @@ function updateSummary() {
 
 async function getJson(url, options = {}) {
   const r = await fetch(url, { cache: 'no-store', ...options });
-  if(r.status===401){location.href='/login?next='+encodeURIComponent(location.pathname+location.search);throw Error('Your session expired. Redirecting to sign-in...')}
   let j;
   try { j = await r.json(); } catch (_) { throw Error(`Server returned HTTP ${r.status}`); }
   if (!r.ok || !j.ok) throw Error(j.error || `Request failed (${r.status})`);
@@ -347,6 +346,59 @@ async function submitAll() {
   }
 }
 
+
+async function deliverGeneratedPdf(doc, filename) {
+  // Native CORMATE app: stream the PDF to Android in small chunks so large
+  // reports do not hit Android's Binder transaction limit.
+  if (window.Android && typeof window.Android.beginPdf === 'function' && typeof window.Android.appendPdfChunk === 'function' && typeof window.Android.finishPdf === 'function') {
+    try {
+      const bytes = new Uint8Array(doc.output('arraybuffer'));
+      window.Android.beginPdf(filename);
+      const chunkSize = 48 * 1024;
+      for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+        const chunk = bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length));
+        let binary = '';
+        const step = 0x8000;
+        for (let i = 0; i < chunk.length; i += step) {
+          binary += String.fromCharCode(...chunk.subarray(i, Math.min(i + step, chunk.length)));
+        }
+        window.Android.appendPdfChunk(btoa(binary));
+      }
+      const ok = window.Android.finishPdf();
+      if (ok !== false) {
+        msg(`PDF saved to Downloads: ${filename}`, true);
+        return true;
+      }
+    } catch (e) {
+      console.warn('Native PDF save failed', e);
+      msg('Could not save the PDF inside the app. Opening the mobile share option instead.', false);
+    }
+  }
+
+  // Normal mobile/desktop browser path.
+  try {
+    doc.save(filename);
+    return true;
+  } catch (e) {
+    console.warn('Direct PDF download failed', e);
+  }
+
+  // Last-resort mobile browser fallback: offer the generated file through the
+  // native share sheet where supported.
+  try {
+    const blob = doc.output('blob');
+    const file = new File([blob], filename, { type: 'application/pdf' });
+    if (navigator.share && (!navigator.canShare || navigator.canShare({ files: [file] }))) {
+      await navigator.share({ title: filename, files: [file] });
+      return true;
+    }
+  } catch (e) {
+    console.warn('PDF share fallback failed', e);
+  }
+  msg('PDF generated, but this browser blocked the download. Please use the Share/Save option if shown.', false);
+  return false;
+}
+
 function downloadSubmissionPdf() {
   if (!lastSubmission || !lastSubmission.rows.length) return;
   if (!window.jspdf) { msg('PDF library failed to load. Check your internet connection and try again.', false); return; }
@@ -428,7 +480,7 @@ function downloadSubmissionPdf() {
   }
 
   const safeStore = String(lastSubmission.store).replace(/[^a-z0-9]+/gi, '_');
-  doc.save(`Stock_Verification_${safeStore}_${ts.toISOString().slice(0, 10)}.pdf`);
+  deliverGeneratedPdf(doc, `Stock_Verification_${safeStore}_${ts.toISOString().slice(0, 10)}.pdf`);
 }
 
 function downloadVariancePdf() {

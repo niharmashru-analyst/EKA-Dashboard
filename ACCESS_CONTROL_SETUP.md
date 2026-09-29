@@ -81,13 +81,3 @@ The app accepts both the older `users` format and the VBA-generated `mappings` f
 ```
 
 Inactive shops are ignored by the mapping loader.
-
-
-## Password hashes (recommended)
-`data/users.json` now stores `password_hash` instead of a plaintext `password`. To add or rotate a user:
-
-```
-python tools/hash_password.py      # prompts twice, prints a salted hash
-```
-Paste the output as `"password_hash"` and remove any `"password"` field. The sample user still has the
-password `ChangeMe@2026` (hashed) - **rotate it before production**. See `.env.example` for all settings.
