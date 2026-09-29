@@ -1,13 +1,16 @@
 {
   "users": {
     "nihar.mashru@reneecosmetics.in": {
+      "name": "Admin",
+      "password": "Admin@123",
+      "access": ["stock_entry", "dashboard", "admin"],
+      "status": ""
+    },
+    "nihar@reneecosmetics.in": {
       "name": "Nihar",
-      "access": [
-        "stock_entry",
-        "dashboard"
-      ],
-      "status": "Active",
-      "password_hash": "scrypt:32768:8:1$pt3eZArz9GrI3tPS$a73ee2c3e2a3ef2449aa0edfdf6bc59c7e70b6488a9e167b99a073b62408354b4568b069b764453cad1f24e74ae63f71aca4f96b8a9c6ef49bfcf6bd440e1282"
+      "password": "renee",
+      "access": ["stock_entry"],
+      "status": ""
     }
   }
 }
