@@ -1,29 +1,91 @@
 {
   "mappings": {
-    "nihar.mashru@reneecosmetics.in": {
+    "monabiyani30@gmail.com": {
       "shops": [
         {
-          "code": "S001",
-          "name": "Srinagar Airport",
+          "code": "RENEE COSMETICS-ISCON ARCADE",
+          "name": "Ahmedabad EBO",
           "status": "Active"
         }
       ]
     },
-    "nihar@reneecosmetics.in": {
+    "meenadasari123456@gmail.com": {
       "shops": [
         {
-          "code": "M002",
-          "name": "Mumbai Airport",
+          "code": "RENEE COSMETICS-SEAWOOD MALL",
+          "name": "Mumbai EBO",
           "status": "Active"
-        },
+        }
+      ]
+    },
+    "vijay.raj@reneecosmetics.in": {
+      "shops": [
         {
-          "code": "S002",
-          "name": "Srinagar Airport",
+          "code": "-",
+          "name": "Hyderabad",
           "status": "Active"
-        },
+        }
+      ]
+    },
+    "divya.j@reneecosmetics.in": {
+      "shops": [
         {
-          "code": "C002",
-          "name": "Chennai Airport",
+          "code": "RENEE COSMETICS-CHENNAI AIRPORT",
+          "name": "Chennai",
+          "status": "Active"
+        }
+      ]
+    },
+    "nagraj.londhe@reneecosmetics.in": {
+      "shops": [
+        {
+          "code": "RENEE COSMETICS-PUNE AIRPORT",
+          "name": "Pune Airport",
+          "status": "Active"
+        }
+      ]
+    },
+    "sarfaraj.khan@reneecosmetics.in": {
+      "shops": [
+        {
+          "code": "RENEE COSMETICS-DEHRADUN AIRPORT",
+          "name": "Dehradun  Airport",
+          "status": "Active"
+        }
+      ]
+    },
+    "shyam.kishor@reneecosmetics.in": {
+      "shops": [
+        {
+          "code": "RENEE COSMETICS PATNA AIRPORT",
+          "name": "Patna Airport",
+          "status": "Active"
+        }
+      ]
+    },
+    "aamir.ali@reneecosmetics.in": {
+      "shops": [
+        {
+          "code": "RENEE COSMETICS SRINAGAR AIRPORT",
+          "name": "Srinagar",
+          "status": "Active"
+        }
+      ]
+    },
+    "suraj.gupta@reneecosmetics.in": {
+      "shops": [
+        {
+          "code": "-",
+          "name": "Vizag Airport",
+          "status": "Active"
+        }
+      ]
+    },
+    "julie.joksan@reneecosmetics.in": {
+      "shops": [
+        {
+          "code": "RENEE COSMETICS-ISCON ARCADE",
+          "name": "Ahmedabad EBO",
           "status": "Active"
         }
       ]
