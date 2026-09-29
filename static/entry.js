@@ -499,3 +499,15 @@ showSetup();
   modal.querySelectorAll('[data-close-ios]').forEach(x=>x.addEventListener('click',close));
   document.addEventListener('keydown',e=>{if(e.key==='Escape') close();});
 })();
+
+/* Dashboard sidebar */
+(function(){
+  const navs=document.querySelectorAll('.sidebar .nav[data-page]');
+  const pages={stock:document.getElementById('page-stock'),inward:document.getElementById('page-inward'),dashboard:document.getElementById('page-dashboard')};
+  function openPage(name){
+    if(name==='inward') return;
+    Object.keys(pages).forEach(k=>{if(pages[k]) pages[k].classList.toggle('hidden',k!==name);});
+    navs.forEach(n=>n.classList.toggle('active',n.dataset.page===name));
+  }
+  navs.forEach(n=>n.addEventListener('click',()=>openPage(n.dataset.page)));
+})();

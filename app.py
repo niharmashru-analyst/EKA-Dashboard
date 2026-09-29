@@ -1,12 +1,17 @@
-import io, os, time, json, sqlite3
+import io, os, time, json, sqlite3, functools
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from datetime import datetime, timezone
 import requests
 import pandas as pd
 import re
-from flask import Flask, jsonify, render_template, request, Response
+from flask import Flask, jsonify, render_template, request, Response, session, redirect
 
 app = Flask(__name__)
+app.secret_key = os.getenv("SECRET_KEY", "CORMATE-EKA-2026-CHANGE-ME")
+DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@cormate.com").strip().lower()
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "").strip()
+USERS_JSON_PATH = os.getenv("USERS_JSON_PATH", os.path.join(app.root_path, "data", "users.json")).strip()
 
 @app.after_request
 def compress_response(response):
@@ -668,6 +673,7 @@ def _ai_analyze_query(x, variance, view_mode, question):
 
 
 @app.post("/api/ai/chat")
+@require_access("dashboard")
 def ai_chat():
     try:
         if not GEMINI_API_KEY:
@@ -707,17 +713,167 @@ def ai_chat():
     except Exception as e:
         return jsonify({"ok":False,"error":str(e)}),500
 
+# -----------------------------------------------------------------------------
+# CORMATE access control
+# -----------------------------------------------------------------------------
+def _load_users_config():
+    if not os.path.exists(USERS_JSON_PATH):
+        return {"users": {}}
+    with open(USERS_JSON_PATH, "r", encoding="utf-8-sig") as f:
+        payload = json.load(f)
+    return payload if isinstance(payload, dict) else {"users": {}}
+
+def _user_record(email):
+    email = str(email or "").strip().lower()
+    users = _load_users_config().get("users", {})
+    rec = users.get(email)
+    return rec if isinstance(rec, dict) else None
+
+def _check_password(rec, password):
+    # Plain password is intentionally supported for easy JSON maintenance.
+    # For stronger security, a future users.json can use password_hash instead.
+    if not rec:
+        return False
+    if "password" in rec and str(rec.get("password", "")) == password:
+        return True
+    stored_hash = str(rec.get("password_hash", ""))
+    if stored_hash:
+        import hashlib
+        return hashlib.sha256(password.encode("utf-8")).hexdigest() == stored_hash
+    return False
+
+def _is_admin(email, password=None):
+    email = str(email or "").strip().lower()
+    if not email or email != ADMIN_EMAIL:
+        return False
+    if password is None:
+        return bool(session.get("is_admin"))
+    return bool(ADMIN_PASSWORD) and password == ADMIN_PASSWORD
+
+def _has_access(page):
+    if session.get("is_admin"):
+        return True
+    access = session.get("access", []) or []
+    return page in access
+
+def require_access(page):
+    def deco(fn):
+        @functools.wraps(fn)
+        def wrapped(*args, **kwargs):
+            if not session.get("user_email"):
+                if request.path.startswith("/api/"):
+                    return jsonify({"ok": False, "error": "Authentication required."}), 401
+                return render_template("login.html", next_url=request.full_path.rstrip("?"))
+            if not _has_access(page):
+                if request.path.startswith("/api/"):
+                    return jsonify({"ok": False, "error": "You do not have access to this section."}), 403
+                return render_template("access_denied.html", page=page), 403
+            return fn(*args, **kwargs)
+        return wrapped
+    return deco
+
+
+def _enforce_identity(email):
+    email = str(email or "").strip().lower()
+    if session.get("is_admin"):
+        return True
+    return bool(session.get("user_email")) and email == str(session.get("user_email")).strip().lower()
+
+def _access_destinations():
+    if session.get("is_admin"):
+        return ["stock_entry", "dashboard", "admin"]
+    return list(session.get("access", []) or [])
+
+@app.get("/login")
+def login_page():
+    if session.get("user_email"):
+        return redirect(_destination_for_access())
+    return render_template("login.html", next_url=request.args.get("next", ""))
+
+def _destination_for_access():
+    access = _access_destinations()
+    if "dashboard" in access and len(access) == 1:
+        return "/"
+    if "stock_entry" in access and len(access) == 1:
+        return "/entry"
+    return "/choose"
+
+@app.post("/login")
+def login():
+    payload = request.get_json(silent=True) or request.form
+    email = str(payload.get("email", "")).strip().lower()
+    password = str(payload.get("password", ""))
+    if not email or not password:
+        return jsonify({"ok": False, "error": "Email and password are required."}), 400
+
+    if _is_admin(email, password):
+        session.clear()
+        session["user_email"] = email
+        session["user_name"] = "Admin"
+        session["is_admin"] = True
+        session["access"] = ["stock_entry", "dashboard", "admin"]
+        return jsonify({"ok": True, "redirect": "/choose"})
+
+    rec = _user_record(email)
+    if not rec or not _check_password(rec, password):
+        return jsonify({"ok": False, "error": "Incorrect email or password."}), 401
+
+    access = rec.get("access", [])
+    if isinstance(access, str):
+        access = [access]
+    access = [str(x).strip().lower() for x in access if str(x).strip()]
+    valid = {"stock_entry", "dashboard"}
+    access = [x for x in access if x in valid]
+    if not access:
+        return jsonify({"ok": False, "error": "Your account has no active access assigned."}), 403
+
+    session.clear()
+    session["user_email"] = email
+    session["user_name"] = str(rec.get("name", email.split("@")[0]))
+    session["is_admin"] = False
+    session["access"] = access
+    return jsonify({"ok": True, "redirect": _destination_for_access()})
+
+@app.get("/choose")
+def choose():
+    if not session.get("user_email"):
+        return redirect("/login")
+    return render_template("choose.html", name=session.get("user_name", "User"), email=session.get("user_email", ""), access=_access_destinations())
+
+@app.get("/logout")
+def logout():
+    session.clear()
+    return redirect("/login")
+
+@app.get("/admin")
+def admin():
+    if not session.get("is_admin"):
+        return render_template("access_denied.html", page="admin"), 403
+    users = _load_users_config().get("users", {})
+    rows=[]
+    for email, rec in users.items():
+        if not isinstance(rec, dict):
+            continue
+        access = rec.get("access", [])
+        if isinstance(access, str): access=[access]
+        rows.append({"email": email, "name": rec.get("name", ""), "access": access})
+    return render_template("admin.html", rows=rows)
+
 @app.get("/")
-def index(): return render_template("index.html")
+@require_access("dashboard")
+def index():
+    return render_template("index.html")
 
 @app.get("/download")
 @app.get("/app")
 def app_download(): return render_template("app_download.html")
 
 @app.get("/entry")
-def entry(): return render_template("entry.html")
+@require_access("stock_entry")
+def entry(): return render_template("entry.html", access=_access_destinations(), user_email=session.get("user_email", ""), is_admin=bool(session.get("is_admin")))
 
 @app.get("/api/data")
+@require_access("dashboard")
 def api_data():
     try:
         stock=load_stock(request.args.get("refresh")=="1")
@@ -729,6 +885,7 @@ def api_data():
     except Exception as e: return jsonify({"ok":False,"error":str(e)}),500
 
 @app.get("/api/variance")
+@require_access("dashboard")
 def api_variance():
     try:
         var=load_variance(request.args.get("refresh")=="1")
@@ -741,11 +898,14 @@ def api_variance():
     except Exception as e: return jsonify({"ok":False,"error":str(e)}),500
 
 @app.post("/api/data/sync")
+@require_access("stock_entry")
 def data_sync():
     """Force-refresh data sources used by Field Entry and Inward Validation."""
     try:
         p = request.get_json(silent=True) or {}
         email = str(p.get("email", "")).strip().lower()
+        if not _enforce_identity(email):
+            return jsonify({"ok": False, "error": "The submitted email does not match the signed-in account."}), 403
         mp = load_mapping(True)
         if email and email not in set(mp["Email ID"].astype(str).str.lower()):
             return jsonify({"ok": False, "error": "Email ID is not mapped to any shop."}), 403
@@ -763,9 +923,12 @@ def data_sync():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 @app.get("/api/entry-meta")
+@require_access("stock_entry")
 def entry_meta():
     try:
         email=request.args.get("email","").strip().lower()
+        if not _enforce_identity(email):
+            return jsonify({"ok":False,"error":"The requested email does not match the signed-in account."}),403
         store=request.args.get("store","").strip()
 
         # Fast path: email -> mapped shops comes entirely from mapping.json.
@@ -789,9 +952,11 @@ def entry_meta():
         return jsonify({"ok":False,"error":str(e)}),500
 
 @app.post("/api/submit")
+@require_access("stock_entry")
 def submit():
     try:
         payload=request.get_json(force=True); email=str(payload.get("email","")).strip().lower(); store=str(payload.get("store_name","")).strip(); rows=payload.get("rows",[])
+        if not _enforce_identity(email): return jsonify({"ok":False,"error":"The submitted email does not match the signed-in account."}),403
         if not email or not store or not rows: return jsonify({"ok":False,"error":"Email, shop and at least one SKU are required."}),400
         mp,master=load_entry_sources(False)
         allowed=set(mp.loc[mp["Email ID"]==email,"Store Name"])
@@ -825,11 +990,13 @@ def submit():
     except Exception as e: return jsonify({"ok":False,"error":str(e)}),500
 
 @app.post("/api/entry-report-data")
+@require_access("stock_entry")
 def entry_report_data():
     """Return the quantity-only data needed to build the two post-submission PDFs."""
     try:
         payload=request.get_json(force=True) or {}
         email=str(payload.get("email","")).strip().lower()
+        if not _enforce_identity(email): return jsonify({"ok":False,"error":"The submitted email does not match the signed-in account."}),403
         store=str(payload.get("store_name","")).strip()
         rows=payload.get("rows",[]) or []
         if not email or not store:
@@ -1155,6 +1322,7 @@ def _inward_labels(mode):
 
 
 @app.post("/api/inward/sync")
+@require_access("stock_entry")
 def inward_sync():
     """Force-refresh the SharePoint/OneDrive inward Excel cache.
 
@@ -1165,6 +1333,7 @@ def inward_sync():
     try:
         p = request.get_json(silent=True) or {}
         email = str(p.get("email", "")).strip().lower()
+        if not _enforce_identity(email): return jsonify({"ok": False, "error": "The submitted email does not match the signed-in account."}), 403
         err = _inward_email_error(email)
         if err:
             return jsonify({"ok": False, "error": err}), 403
@@ -1183,9 +1352,11 @@ def inward_sync():
 
 
 @app.get("/api/inward/fetch")
+@require_access("stock_entry")
 def inward_fetch():
     try:
         email = request.args.get("email", "").strip().lower(); po = request.args.get("po", "").strip()
+        if not _enforce_identity(email): return jsonify({"ok": False, "error": "The requested email does not match the signed-in account."}), 403
         err = _inward_email_error(email)
         if err: return jsonify({"ok": False, "error": err}), 403
         if not po: return jsonify({"ok": False, "error": "Enter an Invoice Number."}), 400
@@ -1203,10 +1374,12 @@ def inward_fetch():
 
 
 @app.post("/api/inward/submit")
+@require_access("stock_entry")
 def inward_submit():
     try:
         p = request.get_json(force=True) or {}
         email = str(p.get("email", "")).strip().lower(); po = str(p.get("po", "")).strip()
+        if not _enforce_identity(email): return jsonify({"ok": False, "error": "The submitted email does not match the signed-in account."}), 403
         err = _inward_email_error(email)
         if err: return jsonify({"ok": False, "error": err}), 403
         lines, _, label, _, mode, _ = inward_po(po, email)
@@ -1262,6 +1435,7 @@ def inward_submit():
     except Exception as e: return jsonify({"ok": False, "error": str(e)}), 500
 
 @app.get("/api/submissions")
+@require_access("stock_entry")
 def submissions():
     try:
         if SUBMISSION_API_URL: return jsonify(remote_request("GET") or {})
@@ -1269,10 +1443,13 @@ def submissions():
     except Exception as e: return jsonify({"ok":False,"error":str(e)}),500
 
 @app.get("/api/last-submissions")
+@require_access("stock_entry")
 def last_submissions():
     """Return the latest stock submission summary for each shop mapped to the email."""
     try:
         email = str(request.args.get("email", "")).strip().lower()
+        if not _enforce_identity(email):
+            return jsonify({"ok": False, "error": "The requested email does not match the signed-in account."}), 403
         if not email:
             return jsonify({"ok": False, "error": "Email ID is required."}), 400
         mp, _ = load_entry_sources(False)
@@ -1327,6 +1504,7 @@ def last_submissions():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 @app.get("/api/export")
+@require_access("dashboard")
 def export():
     try:
         stock=load_stock(False)
@@ -1337,6 +1515,7 @@ def export():
     except Exception as e: return jsonify({"ok":False,"error":str(e)}),500
 
 @app.get("/api/variance-export")
+@require_access("dashboard")
 def variance_export():
     try:
         df=merge_variance_actuals(load_variance(False), load_stock(False))

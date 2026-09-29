@@ -1,0 +1,12 @@
+{
+  "users": {
+    "nihar.mashru@reneecosmetics.in": {
+      "name": "Nihar",
+      "password": "ChangeMe@2026",
+      "access": [
+        "stock_entry",
+        "dashboard"
+      ]
+    }
+  }
+}

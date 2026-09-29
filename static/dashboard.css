@@ -457,3 +457,5 @@ main{background:var(--renee-bg)}.eyebrow{color:var(--renee-pink-2)}.topbar h1{co
     border-radius:11px!important;
   }
 }
+
+.dashboard-access-card{max-width:720px;margin:24px auto}.dashboard-access-kicker{font-size:10px;font-weight:800;letter-spacing:2px;color:#ff2b9a;margin-bottom:8px}.dashboard-password-row{display:flex;gap:10px;margin-top:22px}.dashboard-password-row input{flex:1;background:#090909;border:1px solid #2a2a2a;color:#fff;border-radius:12px;padding:13px 14px}.dashboard-password-row input:focus{outline:none;border-color:#ff2b9a;box-shadow:0 0 0 3px rgba(255,43,154,.12)}@media(max-width:600px){.dashboard-password-row{flex-direction:column}.dashboard-password-row .btn{width:100%}}
