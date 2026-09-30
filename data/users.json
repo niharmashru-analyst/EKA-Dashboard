@@ -83,6 +83,12 @@
       "password": "Ashi@2026",
       "access": ["stock_entry", "dashboard"],
       "status": "Sales Director"
+    },
+    "pravin.kumar@reneecosmetics.in": {
+      "name": "Pravin Kumar",
+      "password": "Prav@2026",
+      "access": ["stock_entry", "dashboard"],
+      "status": "EKA HOD"
     }
   }
 }
