@@ -4,106 +4,91 @@
       "name": "Admin",
       "password": "Admin@123",
       "access": ["stock_entry", "dashboard", "admin"],
-      "status": "Active",
-      "role": "Admin"
+      "status": "Active"
     },
     "vijay.raj@reneecosmetics.in": {
       "name": "Permonoi Vijay Raj",
       "password": "Perm@2026",
       "access": ["stock_entry"],
-      "status": "Active",
-      "role": "Assistant Store Manager"
+      "status": "Active"
     },
     "monabiyani30@gmail.com": {
       "name": "Biyani Monaben",
       "password": "Biya@2026",
       "access": ["stock_entry"],
-      "status": "Active",
-      "role": "Assistant Store Manager"
+      "status": "Active"
     },
     "divya.j@reneecosmetics.in": {
       "name": "Divya bharathi J",
       "password": "Divy@2026",
       "access": ["stock_entry"],
-      "status": "Active",
-      "role": "Store Manager"
+      "status": "Active"
     },
     "sarfaraj.khan@reneecosmetics.in": {
       "name": "Sarfaraj Khan",
       "password": "Sarf@2026",
       "access": ["stock_entry"],
-      "status": "Active",
-      "role": "Store Manager"
+      "status": "Active"
     },
     "shyam.kishor@reneecosmetics.in": {
       "name": "Shayam Kishor",
       "password": "Shay@2026",
       "access": ["stock_entry"],
-      "status": "Active",
-      "role": "Store Manager"
+      "status": "Active"
     },
     "aamir.ali@reneecosmetics.in": {
       "name": "Aamir Ali",
       "password": "Aami@2026",
       "access": ["stock_entry"],
-      "status": "Active",
-      "role": "Store Manager"
+      "status": "Active"
     },
     "nagraj.londhe@reneecosmetics.in": {
       "name": "Nagraj Pandurang Londhe",
       "password": "Nagr@2026",
       "access": ["stock_entry"],
-      "status": "Active",
-      "role": "Store Manager"
+      "status": "Active"
     },
     "meenadasari123456@gmail.com": {
       "name": "Meena Achyut Mhatre",
       "password": "Meen@2026",
       "access": ["stock_entry"],
-      "status": "Active",
-      "role": "Store Manager"
+      "status": "Active"
     },
     "suraj.gupta@reneecosmetics.in": {
       "name": "Suraj Gupta",
       "password": "Sura@2026",
       "access": ["stock_entry"],
-      "status": "Active",
-      "role": "Store Manager"
+      "status": "Active"
     },
     "muskangrover1471995@gmail.com": {
       "name": "Muskan Grover",
       "password": "Musk@2026",
       "access": ["stock_entry"],
-      "status": "Active",
-      "role": "Store Manager"
+      "status": "Active"
     },
     "julie.joksan@reneecosmetics.in": {
       "name": "Julie Mahendrabhai Joksan",
       "password": "Juli@2026",
       "access": ["stock_entry"],
-      "status": "Active",
-      "role": "Store Manager"
+      "status": "Active"
     },
     "shailesh.salian@reneecosmetics.in": {
       "name": "Shailesh Salian",
       "password": "Shai@2026",
       "access": ["stock_entry", "dashboard"],
-      "status": "Active",
-      "role": "HOD"
+      "status": "Active"
     },
     "ashish.dewan@reneecosmetics.in": {
       "name": "Ashish Dewan",
       "password": "Ashi@2026",
       "access": ["stock_entry", "dashboard"],
-      "status": "Active",
-      "role": "Sales Director"
+      "status": "Active"
     },
     "pravin.kumar@reneecosmetics.in": {
       "name": "Pravin Kumar",
       "password": "Prav@2026",
       "access": ["stock_entry", "dashboard"],
-      "status": "Active",
-      "role": "EKA HOD"
+      "status": "Active"
     }
   }
 }
