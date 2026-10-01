@@ -112,6 +112,15 @@
           "status": "Active"
         }
       ]
+    },
+    "vidyamanikandan80@gmail.com": {
+      "shops": [
+        {
+          "code": "-",
+          "name": "Erode",
+          "status": "Active"
+        }
+      ]
     }
   }
 }
