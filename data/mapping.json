@@ -103,6 +103,15 @@
           "status": "Active"
         }
       ]
+    },
+    "delhiairportt2@reneecosmetics.in": {
+      "shops": [
+        {
+          "code": "-",
+          "name": "Delhi T-2",
+          "status": "Active"
+        }
+      ]
     }
   }
 }

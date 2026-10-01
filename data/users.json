@@ -89,6 +89,12 @@
       "password": "Prav@2026",
       "access": ["stock_entry", "dashboard"],
       "status": "Active"
+    },
+    "delhiairportt2@reneecosmetics.in": {
+      "name": "Rinku Kumar",
+      "password": "Rink@2026",
+      "access": ["stock_entry"],
+      "status": "Active"
     }
   }
 }
