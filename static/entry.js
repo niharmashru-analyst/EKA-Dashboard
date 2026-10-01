@@ -230,33 +230,43 @@ function render() {
     searchBox.oninput = () => { entrySearch = searchBox.value; currentPage = 1; render(); const s=$('entrySearch'); if(s){s.focus();s.setSelectionRange(s.value.length,s.value.length);} };
   }
 
-  document.querySelectorAll('.entry-num').forEach(x => x.oninput = () => {
-    const row = rows.find(r => String(r.uid) === String(x.dataset.uid));
-    if (!row) return;
-    row[x.dataset.k] = Math.max(0, Number(x.value || 0));
-    const total = row.stock + row.tester;
-    const cell = $('tot-' + row.uid);
-    if (cell) cell.textContent = total;
-    const mobileCell = $('mobile-tot-' + row.uid);
-    if (mobileCell) mobileCell.textContent = total;
-    updateSummary();
-    const top = $('submitEntryTop');
-    if (top) top.disabled = !rows.length;
-    clearTimeout(entrySortTimer);
-    const activeUid = x.dataset.uid, activeKey = x.dataset.k;
-    entrySortTimer = setTimeout(() => {
-      sortRowsByTotal();
-      currentPage = 1;
-      render();
-      const focusInput = document.querySelector(`.entry-num[data-uid=\"${CSS.escape(activeUid)}\"][data-k=\"${activeKey}\"]`);
-      if (focusInput) { focusInput.focus(); focusInput.setSelectionRange(focusInput.value.length, focusInput.value.length); }
-    }, 500);
-  });
-  document.querySelectorAll('.entry-num').forEach(x => x.onchange = () => {
-    clearTimeout(entrySortTimer);
-    sortRowsByTotal();
-    currentPage = 1;
-    render();
+  // IMPORTANT: Never re-render the SKU table while the user is typing.
+  // Rebuilding skuArea.innerHTML on every quantity input causes Android/mobile
+  // keyboards to lose focus, making it look like the page is refreshing and
+  // making multi-digit quantities difficult to punch.
+  document.querySelectorAll('.entry-num').forEach(x => {
+    x.oninput = () => {
+      const row = rows.find(r => String(r.uid) === String(x.dataset.uid));
+      if (!row) return;
+
+      const raw = x.value;
+      row[x.dataset.k] = raw === '' ? 0 : Math.max(0, Number(raw));
+
+      const total = Number(row.stock || 0) + Number(row.tester || 0);
+      const cell = $('tot-' + row.uid);
+      if (cell) cell.textContent = total;
+      const mobileCell = $('mobile-tot-' + row.uid);
+      if (mobileCell) mobileCell.textContent = total;
+
+      updateSummary();
+      const top = $('submitEntryTop');
+      if (top) top.disabled = !rows.length;
+    };
+
+    // Sort only after the user has finished with the input. If they move
+    // directly from Stock to Tester, do not sort/re-render in between.
+    x.onblur = () => {
+      clearTimeout(entrySortTimer);
+      entrySortTimer = setTimeout(() => {
+        const active = document.activeElement;
+        if (active && active.classList && active.classList.contains('entry-num')) return;
+        sortRowsByTotal();
+        render();
+      }, 180);
+    };
+
+    // Prevent native change handling from triggering a table rebuild.
+    x.onchange = () => {};
   });
 
   $('backToSetup').onclick = showSetup;
