@@ -121,6 +121,15 @@
           "status": "Active"
         }
       ]
+    },
+    "nihar.mashru@reneecosmetics.in": {
+      "shops": [
+        {
+          "code": "-",
+          "name": "Nihar",
+          "status": "Active"
+        }
+      ]
     }
   }
 }
