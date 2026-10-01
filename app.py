@@ -448,15 +448,18 @@ def json_records(df):
 def db_init():
     os.makedirs(os.path.dirname(DATABASE_PATH) or ".", exist_ok=True)
     with sqlite3.connect(DATABASE_PATH) as con:
-        con.execute("""CREATE TABLE IF NOT EXISTS submissions(id INTEGER PRIMARY KEY AUTOINCREMENT, submitted_at TEXT, email TEXT, store_name TEXT, ean_code TEXT, product_name TEXT, stock REAL, tester REAL, total REAL)""")
+        con.execute("""CREATE TABLE IF NOT EXISTS submissions(id INTEGER PRIMARY KEY AUTOINCREMENT, entry_no TEXT, submitted_at TEXT, email TEXT, store_name TEXT, ean_code TEXT, product_name TEXT, stock REAL, tester REAL, total REAL)""")
+        cols = [r[1] for r in con.execute("PRAGMA table_info(submissions)").fetchall()]
+        if "entry_no" not in cols:
+            con.execute("ALTER TABLE submissions ADD COLUMN entry_no TEXT DEFAULT '' ")
 
 
 def save_local_submission(payload):
     db_init(); ts=datetime.now(timezone.utc).isoformat(); rows=[]
     for r in payload["rows"]:
-        rows.append((ts,payload["email"],payload["store_name"],str(r.get("EAN Code","")),str(r.get("Product Name","")),float(r.get("Stock",0) or 0),float(r.get("Tester",0) or 0),float(r.get("Total",0) or 0)))
+        rows.append((str(payload.get("entry_no", "")).strip(),ts,payload["email"],payload["store_name"],str(r.get("EAN Code","")),str(r.get("Product Name","")),float(r.get("Stock",0) or 0),float(r.get("Tester",0) or 0),float(r.get("Total",0) or 0)))
     with sqlite3.connect(DATABASE_PATH) as con:
-        con.executemany("INSERT INTO submissions(submitted_at,email,store_name,ean_code,product_name,stock,tester,total) VALUES(?,?,?,?,?,?,?,?)",rows)
+        con.executemany("INSERT INTO submissions(entry_no,submitted_at,email,store_name,ean_code,product_name,stock,tester,total) VALUES(?,?,?,?,?,?,?,?,?)",rows)
     return len(rows)
 
 
@@ -1095,7 +1098,9 @@ def entry_meta():
             # Only after the user selects a shop do we load the heavier Excel sources.
             stock=load_stock(False)
             master=load_master(False)
-            available=stock[stock["Store Name"].astype(str).str.strip()==store][["EAN Code","Product Name"]].drop_duplicates().to_dict(orient="records")
+            store_stock=stock[stock["Store Name"].astype(str).str.strip()==store].copy()
+            store_stock["Stock"]=pd.to_numeric(store_stock.get("Stock",0),errors="coerce").fillna(0)
+            available=(store_stock.groupby(["EAN Code","Product Name"],as_index=False)["Stock"].sum().rename(columns={"Stock":"Current Stock"}).to_dict(orient="records"))
             master_skus=master[["EAN Code","Product Name"]].to_dict(orient="records")
 
         return jsonify({"ok":True,"stores":stores,"selected_store":store,"available_skus":available,"master_skus":master_skus,"mapping_source":_cache.get("map_source",""),"mapped_email":email})
@@ -1126,8 +1131,10 @@ def submit():
             stock_qty=max(0.0,float(r.get("Stock",0) or 0))
             tester_qty=max(0.0,float(r.get("Tester",0) or 0))
             cleaned.append({"EAN Code":ean,"Product Name":product_name,"Stock":stock_qty,"Tester":tester_qty,"Total":stock_qty+tester_qty})
-        if not cleaned: return jsonify({"ok":False,"error":"No valid SKU rows submitted."}),400
-        payload={"email":email,"store_name":store,"rows":cleaned}
+        cleaned=[r for r in cleaned if float(r.get("Total",0) or 0) > 0]
+        if not cleaned: return jsonify({"ok":False,"error":"Please enter quantity for at least one SKU."}),400
+        entry_no=str(payload.get("entry_no", "")).strip() or ("STK-" + datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(2).upper())
+        payload={"entry_no":entry_no,"email":email,"store_name":store,"rows":cleaned}
         if SUBMISSION_API_URL:
             result=remote_request("POST",payload) or {}
             if not result.get("ok"):
@@ -1135,9 +1142,9 @@ def submit():
             saved=int(result.get("saved_rows",len(cleaned)) or 0)
             if saved != len(cleaned):
                 return jsonify({"ok":False,"error":f"Submission mismatch: sent {len(cleaned)} rows but Apps Script saved {saved}.","remote":result}),502
-            return jsonify({"ok":True,"message":"Stock submitted successfully.","saved_rows":saved,"remote":result})
+            return jsonify({"ok":True,"message":"Stock submitted successfully.","saved_rows":saved,"entry_no":entry_no,"remote":result})
         saved=save_local_submission(payload)
-        return jsonify({"ok":True,"message":"Stock submitted successfully.","saved_rows":saved})
+        return jsonify({"ok":True,"message":"Stock submitted successfully.","saved_rows":saved,"entry_no":entry_no})
     except Exception as e: return jsonify({"ok":False,"error":str(e)}),500
 
 @app.post("/api/entry-report-data")
@@ -1609,6 +1616,7 @@ def submissions():
         df = df.rename(columns={c: rename.get(c,c) for c in df.columns}).copy()
         if "store_name" not in df.columns: return jsonify({"ok": True, "records": []})
         df["store_name"] = df["store_name"].fillna("").astype(str).str.strip()
+        if "total" in df.columns: df["total"] = pd.to_numeric(df["total"], errors="coerce").fillna(0); df = df[df["total"] > 0].copy()
         df = df[df["store_name"].isin(mapped)].copy()
         return jsonify({"ok": True, "records": json_records(df)})
     except Exception:

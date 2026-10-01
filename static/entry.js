@@ -1,4 +1,5 @@
 let email = '', stores = [], selectedStore = '', master = [], rows = [];
+let submissionHistory = [];
 let lastSubmission = null;
 let currentPage = 1;
 const PAGE_SIZE = 25;
@@ -130,7 +131,7 @@ async function loadSku() {
   try {
     const j=await getJson('/api/entry-meta?email='+encodeURIComponent(email)+'&store='+encodeURIComponent(selectedStore)+'&_ts='+Date.now());
     master=j.master_skus||master; const available=j.available_skus||[];
-    rows=available.map(x=>({uid:uidSeed++,ean:String(x['EAN Code']??'').trim(),name:String(x['Product Name']??''),stock:0,tester:0})); entrySearch=''; currentPage=1; entryStep=2;
+    rows=available.map(x=>({uid:uidSeed++,ean:String(x['EAN Code']??'').trim(),name:String(x['Product Name']??''),currentStock:Number(x['Current Stock']||0),stock:0,tester:0})); entrySearch=''; currentPage=1; entryStep=2;
     $('setupActions').style.display='none'; $('email').disabled=true; $('store').disabled=true;
     setEntryLoading(true,'Loading SKU Entry',`${rows.length.toLocaleString('en-IN')} SKU(s) found. Building the entry table…`);
     render(); msg(`${rows.length.toLocaleString('en-IN')} SKU(s) loaded for ${selectedStore}.`,true);
@@ -172,12 +173,31 @@ function renderLastSubmissions(records) {
 }
 
 async function loadLastSubmissions() {
+  const box=$('lastSubmissionPanel'); if(!box || !email) return;
   try {
-    const j = await getJson('/api/last-submissions?email=' + encodeURIComponent(email) + '&_ts=' + Date.now());
-    renderLastSubmissions(j.records || []);
-  } catch (_) {
-    renderLastSubmissions([]);
-  }
+    const j=await getJson('/api/submissions?_ts='+Date.now());
+    submissionHistory=j.records||[];
+    const groups={};
+    submissionHistory.forEach(r=>{
+      const store=String(r.store_name||'').trim(); if(!stores.includes(store)) return;
+      const ts=String(r.submitted_at||'');
+      const key=String(r.entry_no||'').trim() || ('LEGACY-'+ts);
+      if(!groups[key]) groups[key]={entry_no:String(r.entry_no||''),submitted_at:ts,email:String(r.email||''),store_name:store,rows:[]};
+      groups[key].rows.push(r);
+    });
+    const entries=Object.values(groups).sort((a,b)=>new Date(b.submitted_at)-new Date(a.submitted_at)).slice(0,50);
+    box.classList.remove('hidden');
+    box.innerHTML=`<div class="last-sub-head"><div><b>My Submission History</b><span>Select an entry to view SKU-wise quantities. Only &gt;0 quantities are shown.</span></div><span class="last-sub-refresh">${entries.length} entries</span></div><div class="submission-history-list">${entries.length ? entries.map((e,i)=>{const d=new Date(e.submitted_at);const when=!Number.isNaN(d.getTime())?d.toLocaleString('en-IN',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}):'Date unavailable';const qty=e.rows.reduce((a,r)=>a+Number(r.total||0),0);const no=e.entry_no||('STK-'+(d.toISOString().slice(0,10).replaceAll('-','')));return `<button class="submission-history-item" data-entry-index="${i}"><div><b>${esc(no)}</b><span>${esc(e.store_name)}</span></div><div><span>${esc(when)}</span><span>${e.rows.length} SKU • ${qty.toLocaleString('en-IN')} Qty</span></div></button>`;}).join(''):`<div class="submission-empty">No submitted stock entries found for your mapped shops.</div>`}</div>`;
+    box.querySelectorAll('.submission-history-item').forEach(b=>b.onclick=()=>showSubmissionDetail(entries[Number(b.dataset.entryIndex)]));
+  } catch(e) { box.classList.remove('hidden'); box.innerHTML=`<div class="submission-empty">Could not load submission history: ${esc(e.message)}</div>`; }
+}
+function showSubmissionDetail(entry){
+  if(!entry) return;
+  const d=new Date(entry.submitted_at); const when=!Number.isNaN(d.getTime())?d.toLocaleString('en-IN',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}):'Date unavailable';
+  const qty=entry.rows.reduce((a,r)=>a+Number(r.total||0),0);
+  const no=entry.entry_no || 'Historical Entry';
+  $('lastSubmissionPanel').innerHTML=`<div class="submission-detail"><div class="submission-detail-head"><div><button class="btn secondary small" id="backSubmissionHistory">← Back</button><div class="submission-kicker">SUBMISSION ENTRY</div><h3>${esc(no)}</h3><span>${esc(entry.store_name)} • ${esc(when)}</span></div><div class="submission-detail-kpi"><b>${entry.rows.length}</b><small>SKUs</small><b>${qty.toLocaleString('en-IN')}</b><small>Total Qty</small></div></div><div class="submission-detail-table"><table><thead><tr><th>EAN / SKU</th><th>Product</th><th>Stock</th><th>Tester</th><th>Total</th></tr></thead><tbody>${entry.rows.filter(r=>Number(r.total||0)>0).map(r=>`<tr><td>${esc(r.ean_code||'')}</td><td>${esc(r.product_name||'')}</td><td>${Number(r.stock||0).toLocaleString('en-IN')}</td><td>${Number(r.tester||0).toLocaleString('en-IN')}</td><td><b>${Number(r.total||0).toLocaleString('en-IN')}</b></td></tr>`).join('')}</tbody></table></div></div>`;
+  $('backSubmissionHistory').onclick=loadLastSubmissions;
 }
 
 function render() {
@@ -208,14 +228,14 @@ function render() {
       <div id="masterResults" class="master-results"></div>
     </div>
     <div class="entry-page-note">Showing <b>${filtered.length ? start + 1 : 0}–${Math.min(start + PAGE_SIZE, filtered.length)}</b> of <b>${filtered.length}</b> matching SKUs${entrySearch ? ` • ${rows.length} total` : ''}</div>
-    <div class="entry-table-wrap"><table class="entry-table"><thead><tr><th>EAN / SKU</th><th>Product</th><th>Stock</th><th>Tester</th><th>Total ↓</th></tr></thead><tbody>
-    ${visible.map((r) => { const i = rows.indexOf(r); return `<tr><td>${esc(r.ean)}</td><td>${esc(r.name)}</td><td><input class="entry-num" data-uid="${r.uid}" data-k="stock" type="number" min="0" step="1" value="${Number(r.stock || 0)}"></td><td><input class="entry-num" data-uid="${r.uid}" data-k="tester" type="number" min="0" step="1" value="${Number(r.tester || 0)}"></td><td class="total-cell" id="tot-${r.uid}">${Number(r.stock || 0) + Number(r.tester || 0)}</td></tr>`; }).join('')}
-    ${visible.length ? '' : `<tr><td colspan="5" class="entry-empty-row">No SKU matches your search.</td></tr>`}
+    <div class="entry-table-wrap"><table class="entry-table"><thead><tr><th>EAN / SKU</th><th>Product</th><th>Current Stock</th><th>New Stock</th><th>Tester</th><th>Total ↓</th></tr></thead><tbody>
+    ${visible.map((r) => { const i = rows.indexOf(r); return `<tr><td>${esc(r.ean)}</td><td>${esc(r.name)}</td><td class="current-stock-cell">${Number(r.currentStock||0).toLocaleString('en-IN')}</td><td><input class="entry-num" data-uid="${r.uid}" data-k="stock" type="number" min="0" step="1" value="${Number(r.stock || 0)}"></td><td><input class="entry-num" data-uid="${r.uid}" data-k="tester" type="number" min="0" step="1" value="${Number(r.tester || 0)}"></td><td class="total-cell" id="tot-${r.uid}">${Number(r.stock || 0) + Number(r.tester || 0)}</td></tr>`; }).join('')}
+    ${visible.length ? '' : `<tr><td colspan="6" class="entry-empty-row">No SKU matches your search.</td></tr>`}
     </tbody></table></div>
     <div class="entry-mobile-list">
       ${visible.map((r) => { const total = Number(r.stock || 0) + Number(r.tester || 0); return `<article class="sku-entry-card" data-uid-card="${r.uid}">
         <div class="sku-card-top"><div class="sku-card-thumb">R</div><div class="sku-card-info"><b>${esc(r.name || 'Unnamed Product')}</b><span>SKU / EAN: ${esc(r.ean || '—')}</span></div><div class="sku-card-total"><small>Total</small><strong id="mobile-tot-${r.uid}">${total}</strong></div></div>
-        <div class="sku-card-inputs"><label><span>Stock</span><input class="entry-num" data-uid="${r.uid}" data-k="stock" type="number" min="0" step="1" value="${Number(r.stock || 0)}"></label><label><span>Tester</span><input class="entry-num" data-uid="${r.uid}" data-k="tester" type="number" min="0" step="1" value="${Number(r.tester || 0)}"></label></div>
+        <div class="sku-card-current">Current system stock: <b>${Number(r.currentStock||0).toLocaleString('en-IN')}</b></div><div class="sku-card-inputs"><label><span>New Stock</span><input class="entry-num" data-uid="${r.uid}" data-k="stock" type="number" min="0" step="1" value="${Number(r.stock || 0)}"></label><label><span>Tester</span><input class="entry-num" data-uid="${r.uid}" data-k="tester" type="number" min="0" step="1" value="${Number(r.tester || 0)}"></label></div>
       </article>`; }).join('')}
       ${visible.length ? '' : `<div class="entry-mobile-empty">No SKU matches your search.</div>`}
     </div>
@@ -317,13 +337,16 @@ async function submitAll() {
   if (!rows.length || !selectedStore) return;
   const button = $('submitEntryTop');
   if (button) { button.disabled = true; button.textContent = 'Submitting…'; }
-  msg('Submitting all SKU entries…', true);
-  const enteredRows = rows.map(r => ({ ean: r.ean, name: r.name, stock: Number(r.stock || 0), tester: Number(r.tester || 0), total: Number(r.stock || 0) + Number(r.tester || 0) }));
+  msg('Submitting entered SKU quantities…', true);
+  const enteredRows = rows.filter(r => Number(r.stock || 0) + Number(r.tester || 0) > 0).map(r => ({ ean: r.ean, name: r.name, stock: Number(r.stock || 0), tester: Number(r.tester || 0), total: Number(r.stock || 0) + Number(r.tester || 0) }));
+  if (!enteredRows.length) { showPopup('Nothing to submit', 'Please enter Stock or Tester quantity for at least one SKU.', false, false); if (button) { button.disabled=false; button.textContent='Submit Stock'; } return; }
+  const entryNo = 'STK-' + new Date().toISOString().replace(/[-:TZ.]/g,'').slice(0,14) + '-' + Math.random().toString(36).slice(2,6).toUpperCase();
   try {
     const payload = {
       email,
       store_name: selectedStore,
-      rows: rows.map(r => ({ 'EAN Code': r.ean, 'Product Name': r.name, 'Stock': Number(r.stock || 0), 'Tester': Number(r.tester || 0), 'Total': Number(r.stock || 0) + Number(r.tester || 0) }))
+      entry_no: entryNo,
+      rows: enteredRows.map(r => ({ 'EAN Code': r.ean, 'Product Name': r.name, 'Stock': r.stock, 'Tester': r.tester, 'Total': r.total }))
     };
     const j = await getJson('/api/submit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     const saved = Number(j.saved_rows || 0);
@@ -340,8 +363,8 @@ async function submitAll() {
       reportRows = report.rows || [];
     } catch (_) {}
 
-    lastSubmission = { email, store: selectedStore, rows: enteredRows, reportRows, savedRows: saved, timestamp: new Date() };
-    showPopup('Submission Successful', `${saved.toLocaleString('en-IN')} SKU rows were submitted successfully for ${selectedStore}. Two PDFs are available below.`, true, true);
+    lastSubmission = { entryNo: j.entry_no || entryNo, email, store: selectedStore, rows: enteredRows, reportRows, savedRows: saved, timestamp: new Date() };
+    showPopup('Submission Successful', `Entry No. ${j.entry_no || entryNo} • ${saved.toLocaleString('en-IN')} SKU rows submitted for ${selectedStore}.`, true, true);
     msg(`${saved.toLocaleString('en-IN')} SKU rows submitted successfully.`, true);
     await loadLastSubmissions();
     rows.forEach(r => { r.stock = 0; r.tester = 0; });
@@ -443,6 +466,7 @@ function downloadSubmissionPdf() {
   const totalQty = totalStock + totalTester;
 
   const details = [
+    ['Entry No.', lastSubmission.entryNo || '—'],
     ['Shop / Store', lastSubmission.store],
     ['Submitted By', lastSubmission.email],
     ['Date & Time', `${dateStr}, ${timeStr}`],
@@ -512,7 +536,7 @@ async function downloadVariancePdf() {
   doc.text('RENEE', marginX, y); doc.setTextColor(37,99,235); doc.text(' • E.K.A.', marginX + 21, y);
   doc.setFont('helvetica','bold'); doc.setFontSize(16); doc.setTextColor(23,32,51); doc.text('Variance Analysis Report', pageWidth-marginX, y, {align:'right'});
   y += 7; doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(100,116,139);
-  doc.text(`Store: ${lastSubmission.store}   |   Submitted By: ${lastSubmission.email}`, marginX, y);
+  doc.text(`Entry No.: ${lastSubmission.entryNo || '—'}   |   Store: ${lastSubmission.store}   |   Submitted By: ${lastSubmission.email}`, marginX, y);
   doc.text(`Date: ${lastSubmission.timestamp.toLocaleDateString('en-IN')}`, pageWidth-marginX, y, {align:'right'});
   y += 7; doc.setDrawColor(217,225,236); doc.line(marginX,y,pageWidth-marginX,y); y += 6;
 
