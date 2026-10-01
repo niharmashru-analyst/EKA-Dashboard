@@ -1602,25 +1602,57 @@ def inward_submit():
 @app.get("/api/submissions")
 @require_access("stock_entry")
 def submissions():
+    """Return submission history safely. Regular users see only their own entries for mapped shops."""
     try:
-        if session.get("is_admin"):
-            if SUBMISSION_API_URL: return jsonify(remote_request("GET") or {})
-            return jsonify({"ok":True,"records":json_records(load_local_submissions())})
+        is_admin = bool(session.get("is_admin"))
         email = str(session.get("user_email", "")).strip().lower()
-        mp = load_mapping(False)
-        mapped = set(mp.loc[mp["Email ID"].astype(str).str.lower() == email, "Store Name"].astype(str).str.strip())
-        if not mapped: return jsonify({"ok": True, "records": []})
-        df = load_submissions_live()
-        if df is None or df.empty: return jsonify({"ok": True, "records": []})
-        rename = {"store":"store_name", "Store Name":"store_name", "Shop Name":"store_name", "Email":"email", "Email ID":"email", "Submitted By":"email"}
-        df = df.rename(columns={c: rename.get(c,c) for c in df.columns}).copy()
-        if "store_name" not in df.columns: return jsonify({"ok": True, "records": []})
+
+        if not is_admin and not email:
+            return jsonify({"ok": False, "error": "Authentication required."}), 401
+
+        if SUBMISSION_API_URL:
+            result = remote_request("GET") or {}
+            if not result.get("ok"):
+                return jsonify({"ok": False, "error": result.get("error", "Submission service rejected the request.")}), 502
+            records = result.get("records", []) or []
+            df = pd.DataFrame(records)
+        else:
+            df = load_local_submissions()
+
+        if df is None or df.empty:
+            return jsonify({"ok": True, "records": []})
+
+        rename = {
+            "store": "store_name", "Store Name": "store_name", "Shop Name": "store_name",
+            "Email": "email", "Email ID": "email", "Submitted By": "email",
+            "Date": "submitted_at", "Submitted At": "submitted_at", "timestamp": "submitted_at",
+            "Timestamp": "submitted_at", "Total Qty": "total", "Total": "total",
+            "SKU": "ean_code", "EAN": "ean_code", "EAN Code": "ean_code",
+        }
+        df = df.rename(columns={c: rename.get(c, c) for c in df.columns}).copy()
+        for c, default in [("store_name", ""), ("email", ""), ("submitted_at", ""), ("entry_no", ""), ("total", 0)]:
+            if c not in df.columns:
+                df[c] = default
+
         df["store_name"] = df["store_name"].fillna("").astype(str).str.strip()
-        if "total" in df.columns: df["total"] = pd.to_numeric(df["total"], errors="coerce").fillna(0); df = df[df["total"] > 0].copy()
-        df = df[df["store_name"].isin(mapped)].copy()
+        df["email"] = df["email"].fillna("").astype(str).str.strip().str.lower()
+        df["total"] = pd.to_numeric(df["total"], errors="coerce").fillna(0)
+        df = df[df["total"] > 0].copy()
+
+        if not is_admin:
+            mp = load_mapping(False)
+            mapped = set(mp.loc[mp["Email ID"].astype(str).str.strip().str.lower() == email, "Store Name"].astype(str).str.strip())
+            if not mapped:
+                return jsonify({"ok": True, "records": []})
+            df = df[(df["email"] == email) & (df["store_name"].isin(mapped))].copy()
+
+        if df.empty:
+            return jsonify({"ok": True, "records": []})
+
         return jsonify({"ok": True, "records": json_records(df)})
-    except Exception:
-        return jsonify({"ok":False,"error":"Could not load submissions."}),500
+    except Exception as e:
+        app.logger.exception("Submission history load failed")
+        return jsonify({"ok": False, "error": f"Could not load submissions: {e}"}), 500
 
 
 @app.get("/api/last-submissions")

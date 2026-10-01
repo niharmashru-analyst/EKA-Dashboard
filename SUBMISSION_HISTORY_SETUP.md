@@ -1,4 +1,4 @@
-# Submission History v2
+# Submission History v3
 
 This update adds:
 - Entry Number for every stock submission.
@@ -10,7 +10,7 @@ This update adds:
 
 ## Apps Script
 
-If `SUBMISSION_API_URL` is configured in Render, replace the existing Apps Script code with `Google_Apps_Script_Submissions_v2.gs` and deploy a new Web App version.
+If `SUBMISSION_API_URL` is configured in Render, replace the existing Apps Script code with `Google_Apps_Script_Submissions_v3.gs` and deploy a new Web App version.
 
 Keep the same `SECRET` value as Render's `SUBMISSION_API_SECRET`.
 
@@ -19,3 +19,9 @@ The script migrates an older `Submissions` tab by adding the `entry_no` column.
 ## Important
 
 Old rows that were saved before Entry Number support may not have an `entry_no`. The website groups those historical rows by their submission timestamp and still displays them in history.
+
+
+## Important
+If Render still points to an older Apps Script deployment, redeploy the updated script and make sure SUBMISSION_API_URL points to the new /exec deployment URL.
+
+Regular field users see only their own submissions for their mapped shops. Admin sees all submissions. History filters out Total = 0 rows.
