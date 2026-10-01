@@ -42,6 +42,11 @@
           "code": "RENEE COSMETICS-PUNE AIRPORT",
           "name": "Pune Airport",
           "status": "Active"
+        },
+        {
+          "code": "OG BEAUTY PRIVATE LIMITED",
+          "name": "Pune EBO",
+          "status": "Active"
         }
       ]
     },
@@ -86,6 +91,15 @@
         {
           "code": "RENEE COSMETICS-ISCON ARCADE",
           "name": "Ahmedabad EBO",
+          "status": "Active"
+        }
+      ]
+    },
+    "muskangrover1471995@gmail.com": {
+      "shops": [
+        {
+          "code": "RENEE COSMETICS-VR AMBARSAR MALL",
+          "name": "Amritsar EBO",
           "status": "Active"
         }
       ]
