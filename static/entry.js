@@ -131,7 +131,7 @@ async function loadSku() {
   try {
     const j=await getJson('/api/entry-meta?email='+encodeURIComponent(email)+'&store='+encodeURIComponent(selectedStore)+'&_ts='+Date.now());
     master=j.master_skus||master; const available=j.available_skus||[];
-    rows=available.map(x=>({uid:uidSeed++,ean:String(x['EAN Code']??'').trim(),name:String(x['Product Name']??''),currentStock:Number(x['Current Stock']||0),stock:0,tester:0})); entrySearch=''; currentPage=1; entryStep=2;
+    rows=available.map(x=>({uid:uidSeed++,ean:String(x['EAN Code']??'').trim(),name:String(x['Product Name']??''),stock:0,tester:0})); entrySearch=''; currentPage=1; entryStep=2;
     $('setupActions').style.display='none'; $('email').disabled=true; $('store').disabled=true;
     setEntryLoading(true,'Loading SKU Entry',`${rows.length.toLocaleString('en-IN')} SKU(s) found. Building the entry table…`);
     render(); msg(`${rows.length.toLocaleString('en-IN')} SKU(s) loaded for ${selectedStore}.`,true);
@@ -228,14 +228,14 @@ function render() {
       <div id="masterResults" class="master-results"></div>
     </div>
     <div class="entry-page-note">Showing <b>${filtered.length ? start + 1 : 0}–${Math.min(start + PAGE_SIZE, filtered.length)}</b> of <b>${filtered.length}</b> matching SKUs${entrySearch ? ` • ${rows.length} total` : ''}</div>
-    <div class="entry-table-wrap"><table class="entry-table"><thead><tr><th>EAN / SKU</th><th>Product</th><th>Current Stock</th><th>New Stock</th><th>Tester</th><th>Total ↓</th></tr></thead><tbody>
-    ${visible.map((r) => { const i = rows.indexOf(r); return `<tr><td>${esc(r.ean)}</td><td>${esc(r.name)}</td><td class="current-stock-cell">${Number(r.currentStock||0).toLocaleString('en-IN')}</td><td><input class="entry-num" data-uid="${r.uid}" data-k="stock" type="number" min="0" step="1" value="${Number(r.stock || 0)}"></td><td><input class="entry-num" data-uid="${r.uid}" data-k="tester" type="number" min="0" step="1" value="${Number(r.tester || 0)}"></td><td class="total-cell" id="tot-${r.uid}">${Number(r.stock || 0) + Number(r.tester || 0)}</td></tr>`; }).join('')}
-    ${visible.length ? '' : `<tr><td colspan="6" class="entry-empty-row">No SKU matches your search.</td></tr>`}
+    <div class="entry-table-wrap"><table class="entry-table"><thead><tr><th>EAN / SKU</th><th>Product</th><th>Stock</th><th>Tester</th><th>Total ↓</th></tr></thead><tbody>
+    ${visible.map((r) => { const i = rows.indexOf(r); return `<tr><td>${esc(r.ean)}</td><td>${esc(r.name)}</td><td><input class="entry-num" data-uid="${r.uid}" data-k="stock" type="number" min="0" step="1" value="${Number(r.stock || 0)}"></td><td><input class="entry-num" data-uid="${r.uid}" data-k="tester" type="number" min="0" step="1" value="${Number(r.tester || 0)}"></td><td class="total-cell" id="tot-${r.uid}">${Number(r.stock || 0) + Number(r.tester || 0)}</td></tr>`; }).join('')}
+    ${visible.length ? '' : `<tr><td colspan="5" class="entry-empty-row">No SKU matches your search.</td></tr>`}
     </tbody></table></div>
     <div class="entry-mobile-list">
       ${visible.map((r) => { const total = Number(r.stock || 0) + Number(r.tester || 0); return `<article class="sku-entry-card" data-uid-card="${r.uid}">
         <div class="sku-card-top"><div class="sku-card-thumb">R</div><div class="sku-card-info"><b>${esc(r.name || 'Unnamed Product')}</b><span>SKU / EAN: ${esc(r.ean || '—')}</span></div><div class="sku-card-total"><small>Total</small><strong id="mobile-tot-${r.uid}">${total}</strong></div></div>
-        <div class="sku-card-current">Current system stock: <b>${Number(r.currentStock||0).toLocaleString('en-IN')}</b></div><div class="sku-card-inputs"><label><span>New Stock</span><input class="entry-num" data-uid="${r.uid}" data-k="stock" type="number" min="0" step="1" value="${Number(r.stock || 0)}"></label><label><span>Tester</span><input class="entry-num" data-uid="${r.uid}" data-k="tester" type="number" min="0" step="1" value="${Number(r.tester || 0)}"></label></div>
+        <div class="sku-card-inputs"><label><span>Stock</span><input class="entry-num" data-uid="${r.uid}" data-k="stock" type="number" min="0" step="1" value="${Number(r.stock || 0)}"></label><label><span>Tester</span><input class="entry-num" data-uid="${r.uid}" data-k="tester" type="number" min="0" step="1" value="${Number(r.tester || 0)}"></label></div>
       </article>`; }).join('')}
       ${visible.length ? '' : `<div class="entry-mobile-empty">No SKU matches your search.</div>`}
     </div>
