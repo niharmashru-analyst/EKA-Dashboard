@@ -113,7 +113,7 @@
         }
       ]
     },
-    "vidyamanikandan80@gmail.com": {
+    "vidhyamanikandan80@gmail.com": {
       "shops": [
         {
           "code": "-",
@@ -127,24 +127,6 @@
         {
           "code": "-",
           "name": "Nihar",
-          "status": "Active"
-        }
-      ]
-    },
-    "priyaharihp24@gmail.com": {
-      "shops": [
-        {
-          "code": "RENEE COSMETICS - PROZONE MALL COIMBATORE",
-          "name": "Coimbatore Kiosk",
-          "status": "Active"
-        }
-      ]
-    },
-    "dehradun.kiosk@reneecosmetics.in": {
-      "shops": [
-        {
-          "code": "RENEE COSMETICS-DEHRADUN",
-          "name": "Dehradun Kiosk",
           "status": "Active"
         }
       ]

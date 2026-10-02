@@ -96,21 +96,9 @@
       "access": ["stock_entry"],
       "status": "Active"
     },
-    "vidyamanikandan80@gmail.com": {
+    "vidhyamanikandan80@gmail.com": {
       "name": "Vidya",
       "password": "Vidy@2026",
-      "access": ["stock_entry"],
-      "status": "Active"
-    },
-    "priyaharihp24@gmail.com": {
-      "name": "Priya Hari",
-      "password": "Priy@2026",
-      "access": ["stock_entry"],
-      "status": "Active"
-    },
-    "dehradun.kiosk@reneecosmetics.in": {
-      "name": "Gaurav",
-      "password": "Gaur@2026",
       "access": ["stock_entry"],
       "status": "Active"
     }

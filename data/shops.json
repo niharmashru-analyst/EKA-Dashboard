@@ -1,0 +1,102 @@
+{
+  "shops": [
+    {
+      "code": "RENEE COSMETICS-ISCON ARCADE",
+      "name": "Ahmedabad EBO",
+      "city": "",
+      "region": "",
+      "status": "Active"
+    },
+    {
+      "code": "RENEE COSMETICS-VR AMBARSAR MALL",
+      "name": "Amritsar EBO",
+      "city": "",
+      "region": "",
+      "status": "Active"
+    },
+    {
+      "code": "RENEE COSMETICS-CHENNAI AIRPORT",
+      "name": "Chennai Airport",
+      "city": "",
+      "region": "",
+      "status": "Active"
+    },
+    {
+      "code": "RENEE COSMETICS-DEHRADUN AIRPORT",
+      "name": "Dehradun  Airport",
+      "city": "",
+      "region": "",
+      "status": "Active"
+    },
+    {
+      "code": "-",
+      "name": "Delhi T-2",
+      "city": "",
+      "region": "",
+      "status": "Active"
+    },
+    {
+      "code": "-",
+      "name": "Erode",
+      "city": "",
+      "region": "",
+      "status": "Active"
+    },
+    {
+      "code": "-",
+      "name": "Hyderabad",
+      "city": "",
+      "region": "",
+      "status": "Active"
+    },
+    {
+      "code": "RENEE COSMETICS-SEAWOOD MALL",
+      "name": "Mumbai EBO",
+      "city": "",
+      "region": "",
+      "status": "Active"
+    },
+    {
+      "code": "-",
+      "name": "Nihar",
+      "city": "",
+      "region": "",
+      "status": "Active"
+    },
+    {
+      "code": "RENEE COSMETICS PATNA AIRPORT",
+      "name": "Patna Airport",
+      "city": "",
+      "region": "",
+      "status": "Active"
+    },
+    {
+      "code": "RENEE COSMETICS-PUNE AIRPORT",
+      "name": "Pune Airport",
+      "city": "",
+      "region": "",
+      "status": "Active"
+    },
+    {
+      "code": "OG BEAUTY PRIVATE LIMITED",
+      "name": "Pune EBO",
+      "city": "",
+      "region": "",
+      "status": "Active"
+    },
+    {
+      "code": "RENEE COSMETICS SRINAGAR AIRPORT",
+      "name": "Srinagar Airport",
+      "city": "",
+      "region": "",
+      "status": "Active"
+    },
+    {
+      "code": "-",
+      "name": "Vizag Airport",
+      "city": "",
+      "region": "",
+      "status": "Active"
+    }
+  ]
+}

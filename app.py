@@ -1,10 +1,10 @@
-import io, os, time, json, sqlite3, functools
+import io, os, time, json, sqlite3, functools, secrets, base64, hashlib
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from datetime import datetime, timezone
 import requests
 import pandas as pd
 import re
-from flask import Flask, jsonify, render_template, request, Response, session, redirect
+from flask import Flask, jsonify, render_template, request, Response, session, redirect, send_file
 
 app = Flask(__name__)
 SECRET_KEY = os.getenv("SECRET_KEY", "").strip()
@@ -16,6 +16,16 @@ DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@cormate.com").strip().lower()
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "").strip()
 USERS_JSON_PATH = os.getenv("USERS_JSON_PATH", os.path.join(app.root_path, "data", "users.json")).strip()
+SHOPS_JSON_PATH = os.getenv("SHOPS_JSON_PATH", os.path.join(app.root_path, "data", "shops.json")).strip()
+ADMIN_UPLOAD_MAX_MB = int(os.getenv("ADMIN_UPLOAD_MAX_MB", "25"))
+app.config["MAX_CONTENT_LENGTH"] = ADMIN_UPLOAD_MAX_MB * 1024 * 1024
+GITHUB_CONFIG_TOKEN = os.getenv("GITHUB_CONFIG_TOKEN", "").strip()
+GITHUB_CONFIG_REPO = os.getenv("GITHUB_CONFIG_REPO", "").strip()
+GITHUB_CONFIG_BRANCH = os.getenv("GITHUB_CONFIG_BRANCH", "main").strip() or "main"
+GITHUB_USERS_PATH = os.getenv("GITHUB_USERS_PATH", "data/users.json").strip()
+GITHUB_MAPPING_PATH = os.getenv("GITHUB_MAPPING_PATH", "data/mapping.json").strip()
+GITHUB_SHOPS_PATH = os.getenv("GITHUB_SHOPS_PATH", "data/shops.json").strip()
+UPLOAD_LINK_HOURS = int(os.getenv("UPLOAD_LINK_HOURS", "48"))
 
 @app.after_request
 def compress_response(response):
@@ -519,11 +529,21 @@ def save_remote_inward(email, po, rows):
 def remote_request(method, payload=None):
     if not SUBMISSION_API_URL: return None
     payload=payload or {}
-    if SUBMISSION_API_SECRET:
-        if method.upper()=="GET": r=requests.get(SUBMISSION_API_URL,params={"secret":SUBMISSION_API_SECRET},timeout=30)
-        else: payload={**payload,"secret":SUBMISSION_API_SECRET}; r=requests.request(method,SUBMISSION_API_URL,json=payload,timeout=30)
-    else: r=requests.request(method,SUBMISSION_API_URL,json=payload,timeout=30)
-    r.raise_for_status(); return r.json()
+    try:
+        if SUBMISSION_API_SECRET:
+            if method.upper()=="GET":
+                r=requests.get(SUBMISSION_API_URL,params={"secret":SUBMISSION_API_SECRET},timeout=30)
+            else:
+                payload={**payload,"secret":SUBMISSION_API_SECRET}; r=requests.request(method,SUBMISSION_API_URL,json=payload,timeout=30)
+        else:
+            r=requests.request(method,SUBMISSION_API_URL,json=payload,timeout=30)
+        try: data=r.json()
+        except ValueError: data={"ok":False,"error":(r.text or "Empty response from submission service.")[:500]}
+        if r.status_code>=400:
+            data.setdefault("ok",False); data.setdefault("error",f"Submission service returned HTTP {r.status_code}."); data["http_status"]=r.status_code
+        return data
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Submission service connection failed: {exc}") from exc
 
 
 
@@ -834,15 +854,18 @@ def login():
     if isinstance(access, str):
         access = [access]
     access = [str(x).strip().lower() for x in access if str(x).strip()]
-    valid = {"stock_entry", "dashboard"}
+    valid = {"stock_entry", "dashboard", "admin"}
     access = [x for x in access if x in valid]
+    is_record_admin = "admin" in access
+    if is_record_admin:
+        access = ["stock_entry", "dashboard", "admin"]
     if not access:
         return jsonify({"ok": False, "error": "Your account has no active access assigned."}), 403
 
     session.clear()
     session["user_email"] = email
     session["user_name"] = str(rec.get("name", email.split("@")[0]))
-    session["is_admin"] = False
+    session["is_admin"] = is_record_admin
     session["access"] = access
     return jsonify({"ok": True, "redirect": _destination_for_access()})
 
@@ -897,6 +920,268 @@ def choose():
 def logout():
     session.clear()
     return redirect("/login")
+
+
+def _admin_required():
+    return bool(session.get("is_admin"))
+
+
+def _atomic_write_json(path, payload):
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    os.replace(tmp, path)
+
+
+def _github_publish(path, payload, message):
+    """Optional persistence: publish admin config changes to GitHub when configured.
+    This keeps admin edits across Render redeploys without making GitHub mandatory.
+    """
+    if not (GITHUB_CONFIG_TOKEN and GITHUB_CONFIG_REPO):
+        return {"published": False, "reason": "GitHub persistence is not configured."}
+    import base64 as _b64
+    rel = {os.path.abspath(USERS_JSON_PATH): GITHUB_USERS_PATH,
+           os.path.abspath(MAPPING_JSON_PATH): GITHUB_MAPPING_PATH,
+           os.path.abspath(SHOPS_JSON_PATH): GITHUB_SHOPS_PATH}.get(os.path.abspath(path), path)
+    api = f"https://api.github.com/repos/{GITHUB_CONFIG_REPO}/contents/{rel.lstrip('/')}"
+    headers = {"Authorization": f"Bearer {GITHUB_CONFIG_TOKEN}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+    content = _b64.b64encode(json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")).decode("ascii")
+    try:
+        r = requests.get(api, params={"ref": GITHUB_CONFIG_BRANCH}, headers=headers, timeout=15)
+        sha = r.json().get("sha") if r.ok else None
+        body = {"message": message, "content": content, "branch": GITHUB_CONFIG_BRANCH}
+        if sha: body["sha"] = sha
+        put = requests.put(api, headers=headers, json=body, timeout=20)
+        if put.status_code >= 400:
+            try: detail = put.json().get("message", put.text)
+            except Exception: detail = put.text
+            raise RuntimeError(f"GitHub publish failed: {detail}")
+        return {"published": True, "commit": put.json().get("commit", {}).get("sha", "")}
+    except Exception as e:
+        raise RuntimeError(str(e))
+
+
+def _save_admin_json(path, payload, message):
+    _atomic_write_json(path, payload)
+    result = _github_publish(path, payload, message)
+    _cache["map_ts"] = 0
+    _cache["map_df"] = None
+    return result
+
+
+def _read_shop_directory():
+    """Return a normalized list of all known shops, including unassigned shops."""
+    shops = []
+    try:
+        if os.path.exists(SHOPS_JSON_PATH):
+            with open(SHOPS_JSON_PATH, "r", encoding="utf-8-sig") as f:
+                payload = json.load(f)
+            raw = payload.get("shops", payload) if isinstance(payload, dict) else []
+            if isinstance(raw, dict): raw = list(raw.values())
+            for x in raw if isinstance(raw, list) else []:
+                if isinstance(x, dict):
+                    name = str(x.get("name", x.get("store_name", x.get("Store Name", ""))) or "").strip()
+                    if name:
+                        shops.append({"code": str(x.get("code", x.get("store_code", x.get("Store Code", ""))) or "").strip(),
+                                      "name": name,
+                                      "city": str(x.get("city", x.get("City", "")) or "").strip(),
+                                      "region": str(x.get("region", x.get("Region", "")) or "").strip(),
+                                      "status": str(x.get("status", "Active") or "Active").strip()})
+    except Exception:
+        shops = []
+    # Backfill directory from current mapping so this feature can be added safely to an existing deployment.
+    for r in _admin_mapping_rows():
+        candidate = {"code": r["code"], "name": r["name"], "city": r["city"], "region": r["region"], "status": r["status"]}
+        if not any((candidate["code"] and x["code"] == candidate["code"]) or (x["name"] == candidate["name"]) for x in shops):
+            shops.append(candidate)
+    seen = set(); out=[]
+    for x in shops:
+        key=(x["code"], x["name"])
+        if key not in seen:
+            seen.add(key); out.append(x)
+    return sorted(out, key=lambda x: (x["name"].lower(), x["code"].lower()))
+
+
+def _mapping_payload():
+    try:
+        with open(MAPPING_JSON_PATH, "r", encoding="utf-8-sig") as f:
+            payload=json.load(f)
+        if isinstance(payload, dict) and isinstance(payload.get("mappings"), dict):
+            return {"mappings": payload["mappings"]}
+        if isinstance(payload, dict):
+            return {"mappings": payload.get("users", payload)}
+    except Exception:
+        pass
+    return {"mappings": {}}
+
+
+def _normalize_shop_obj(x):
+    if isinstance(x, str): return {"code":"", "name":x.strip(), "city":"", "region":"", "status":"Active"}
+    if not isinstance(x, dict): return None
+    name=str(x.get("name", x.get("store_name", x.get("Store Name", x.get("shop_name", "")))) or "").strip()
+    if not name: return None
+    return {"code":str(x.get("code", x.get("store_code", x.get("Store Code", ""))) or "").strip(),
+            "name":name,
+            "city":str(x.get("city", x.get("City", "")) or "").strip(),
+            "region":str(x.get("region", x.get("Region", "")) or "").strip(),
+            "status":str(x.get("status", x.get("Status", "Active")) or "Active").strip()}
+
+
+def _all_admin_users_safe():
+    rows=[]
+    for r in _admin_access_rows():
+        rows.append(r)
+    return rows
+
+
+def _submission_entry_groups():
+    try:
+        if SUBMISSION_API_URL:
+            result=remote_request("GET") or {}
+            if not result.get("ok"): return []
+            df=pd.DataFrame(result.get("records", []) or [])
+        else:
+            df=load_local_submissions()
+        if df.empty: return []
+        rename={"store":"store_name","Store Name":"store_name","Shop Name":"store_name","Email":"email","Email ID":"email","Submitted By":"email","Date":"submitted_at","Submitted At":"submitted_at","Timestamp":"submitted_at","Total":"total","Total Qty":"total","EAN":"ean_code","EAN Code":"ean_code","SKU":"ean_code"}
+        df=df.rename(columns={c:rename.get(c,c) for c in df.columns}).copy()
+        for c,d in [("entry_no",""),("submitted_at",""),("email",""),("store_name",""),("ean_code",""),("product_name",""),("stock",0),("tester",0),("total",0)]:
+            if c not in df.columns: df[c]=d
+        df["total"]=pd.to_numeric(df["total"],errors="coerce").fillna(0)
+        df=df[df["total"]>0].copy()
+        df["submitted_at"]=df["submitted_at"].fillna("").astype(str)
+        groups=[]
+        for key,z in df.groupby(df["entry_no"].astype(str).where(df["entry_no"].astype(str).str.strip()!="",df["submitted_at"].astype(str)), sort=False):
+            latest=z.iloc[0]
+            groups.append({"entry_no":str(key),"submitted_at":str(latest["submitted_at"]),"email":str(latest["email"]),"store_name":str(latest["store_name"]),"sku_count":int(len(z)),"total_qty":float(z["total"].sum())})
+        groups.sort(key=lambda x:x["submitted_at"], reverse=True)
+        return groups[:250]
+    except Exception:
+        return []
+
+
+def _upload_token(payload, expires_hours=None):
+    exp=int(time.time()+3600*int(expires_hours or UPLOAD_LINK_HOURS))
+    body=dict(payload, exp=exp)
+    raw=json.dumps(body,separators=(",",":"),sort_keys=True).encode()
+    encoded=base64.urlsafe_b64encode(raw).decode().rstrip("=")
+    sig=hmac_sha256(SECRET_KEY.encode(), raw)
+    return encoded+"."+sig
+
+
+def hmac_sha256(key, data):
+    import hmac
+    return hmac.new(key, data, hashlib.sha256).hexdigest()
+
+
+def _verify_upload_token(token):
+    try:
+        encoded,sig=token.split(".",1)
+        raw=base64.urlsafe_b64decode(encoded+"="*((4-len(encoded)%4)%4))
+        expected=hmac_sha256(SECRET_KEY.encode(), raw)
+        if not secrets.compare_digest(sig, expected): return None
+        payload=json.loads(raw.decode("utf-8"))
+        if int(payload.get("exp",0)) < int(time.time()): return None
+        if not payload.get("email") or not payload.get("store"): return None
+        return payload
+    except Exception:
+        return None
+
+
+def _read_upload_excel(file_storage):
+    if not file_storage or not file_storage.filename:
+        raise RuntimeError("Please choose an Excel file.")
+    name=file_storage.filename.lower()
+    if not name.endswith((".xlsx",".xlsm",".csv")):
+        raise RuntimeError("Upload .xlsx, .xlsm or .csv only.")
+    raw=file_storage.read()
+    if not raw: raise RuntimeError("The uploaded file is empty.")
+    if name.endswith(".csv"):
+        df=pd.read_csv(io.BytesIO(raw), dtype=str, keep_default_na=False)
+    else:
+        df=pd.read_excel(io.BytesIO(raw), dtype=str)
+    df.columns=[str(c).strip() for c in df.columns]
+    df=df.loc[:,~df.columns.duplicated()].copy()
+    return df
+
+
+def _header_auto(headers, candidates):
+    norm={re.sub(r"[^a-z0-9]","",str(h).lower()):h for h in headers}
+    for c in candidates:
+        k=re.sub(r"[^a-z0-9]","",c.lower())
+        if k in norm:return norm[k]
+    for h in headers:
+        k=re.sub(r"[^a-z0-9]","",str(h).lower())
+        if any(re.sub(r"[^a-z0-9]","",c.lower()) in k for c in candidates):return h
+    return ""
+
+
+def _normalize_ean(v):
+    s=str(v or "").strip()
+    if s.lower().endswith(".0") and s[:-2].isdigit(): s=s[:-2]
+    return s
+
+
+def _admin_build_submission(file_storage, email, store, ean_header, stock_header, tester_header="", entry_no=""):
+    email=str(email or "").strip().lower(); store=str(store or "").strip()
+    rec=_user_record(email)
+    if not rec: raise RuntimeError("Target user does not exist.")
+    if str(rec.get("status","Active")).strip().lower() not in {"active","enabled"}: raise RuntimeError("Target user is inactive.")
+    mp=load_mapping(True)
+    allowed=set(mp.loc[mp["Email ID"].astype(str).str.lower()==email,"Store Name"].astype(str).str.strip())
+    if store not in allowed: raise RuntimeError("The selected store is not assigned to the target user. Assign it first.")
+    df=_read_upload_excel(file_storage)
+    if ean_header not in df.columns: raise RuntimeError("Selected EAN column was not found in the uploaded file.")
+    if stock_header and stock_header not in df.columns: raise RuntimeError("Selected Stock column was not found in the uploaded file.")
+    if tester_header and tester_header not in df.columns: raise RuntimeError("Selected Tester column was not found in the uploaded file.")
+    if not stock_header and not tester_header: raise RuntimeError("Select at least Stock or Tester quantity column.")
+    try: master=load_master(False)
+    except Exception: master=pd.DataFrame(columns=MASTER_REQUIRED)
+    try: stock=load_stock(False)
+    except Exception: stock=pd.DataFrame(columns=["Store Name","EAN Code","Product Name"])
+    master_map={_normalize_ean(r["EAN Code"]):str(r["Product Name"]).strip() for _,r in master.iterrows() if "EAN Code" in r}
+    store_rows=stock[stock.get("Store Name",pd.Series(dtype=str)).astype(str).str.strip()==store] if not stock.empty and "Store Name" in stock else pd.DataFrame()
+    store_map={_normalize_ean(r["EAN Code"]):str(r["Product Name"]).strip() for _,r in store_rows.iterrows() if "EAN Code" in store_rows}
+    cleaned=[]; skipped=0
+    for _,r in df.iterrows():
+        ean=_normalize_ean(r.get(ean_header,""))
+        if not ean: skipped+=1; continue
+        def num(h):
+            if not h:return 0.0
+            v=str(r.get(h,"0") or "0").strip().replace(",","")
+            try:
+                x=float(v)
+                if pd.isna(x) or x<0 or x==float("inf"): return 0.0
+                return x
+            except Exception:return 0.0
+        stock_qty=num(stock_header); tester_qty=num(tester_header)
+        total=stock_qty+tester_qty
+        if total<=0: skipped+=1; continue
+        product=master_map.get(ean) or store_map.get(ean) or ""
+        if not product: skipped+=1; continue
+        cleaned.append({"EAN Code":ean,"Product Name":product,"Stock":stock_qty,"Tester":tester_qty,"Total":total})
+    if not cleaned: raise RuntimeError("No valid rows with Total > 0 were found. Check the selected columns and EAN values.")
+    # Keep one row per EAN; duplicate upload lines are summed instead of silently losing stock.
+    agg={}
+    for r in cleaned:
+        key=r["EAN Code"]
+        if key not in agg: agg[key]=r.copy()
+        else:
+            agg[key]["Stock"]+=r["Stock"]; agg[key]["Tester"]+=r["Tester"]; agg[key]["Total"]+=r["Total"]
+    cleaned=list(agg.values())
+    entry_no=str(entry_no or "").strip() or ("STK-"+datetime.now().strftime("%Y%m%d-%H%M%S")+"-"+secrets.token_hex(2).upper())
+    payload={"entry_no":entry_no,"email":email,"store_name":store,"rows":cleaned,"submitted_by":str(session.get("user_email") or "admin"),"submission_mode":"admin_upload"}
+    if SUBMISSION_API_URL:
+        result=remote_request("POST",payload) or {}
+        if not result.get("ok"):
+            raise RuntimeError(result.get("error","Submission service rejected the upload."))
+        saved=int(result.get("saved_rows",len(cleaned)) or 0)
+        if saved!=len(cleaned): raise RuntimeError(f"Submission mismatch: sent {len(cleaned)} rows but service saved {saved}.")
+    else:
+        saved=save_local_submission(payload)
+    return {"entry_no":entry_no,"saved_rows":saved,"skipped_rows":skipped,"target_email":email,"store_name":store}
 
 def _admin_access_rows():
     users = _load_users_config().get("users", {})
@@ -972,6 +1257,212 @@ def _admin_mapping_rows():
         rows = []
     return [r for r in rows if r["name"]]
 
+
+
+@app.get("/api/admin/config")
+def admin_config():
+    if not _admin_required(): return jsonify({"ok":False,"error":"Admin access required."}),403
+    users=_all_admin_users_safe(); shops=_read_shop_directory(); mp=_admin_mapping_rows()
+    assignments={}
+    for r in mp: assignments.setdefault(r["email"],[]).append({"code":r["code"],"name":r["name"],"city":r["city"],"region":r["region"],"status":r["status"]})
+    return jsonify({"ok":True,"users":users,"shops":shops,"assignments":assignments,"submissions":_submission_entry_groups(),"persistence":{"github":bool(GITHUB_CONFIG_TOKEN and GITHUB_CONFIG_REPO),"database":DATABASE_PATH}})
+
+
+@app.post("/api/admin/user/save")
+def admin_user_save():
+    if not _admin_required(): return jsonify({"ok":False,"error":"Admin access required."}),403
+    try:
+        p=request.get_json(silent=True) or {}
+        email=str(p.get("email","")).strip().lower(); old_email=str(p.get("old_email","")).strip().lower(); name=str(p.get("name","")).strip(); password=str(p.get("password","")).strip()
+        status=str(p.get("status","Active") or "Active").strip(); role=str(p.get("role","") or "").strip()
+        access=p.get("access",[]) or []
+        if isinstance(access,str): access=[access]
+        access=[str(x).strip().lower() for x in access if str(x).strip() in {"stock_entry","dashboard","admin"}]
+        if "admin" in access: access=["stock_entry","dashboard","admin"]
+        if not email or "@" not in email: return jsonify({"ok":False,"error":"Enter a valid email address."}),400
+        if not name: return jsonify({"ok":False,"error":"Name is required."}),400
+        payload=_load_users_config(); users=payload.get("users",{}) if isinstance(payload,dict) else {}
+        if not isinstance(users,dict): users={}
+        source_email=old_email or email
+        if source_email != email and source_email == str(session.get("user_email","")).strip().lower():
+            return jsonify({"ok":False,"error":"You cannot change the email of the currently signed-in admin."}),400
+        if source_email != email and email in users:
+            return jsonify({"ok":False,"error":"That new email is already registered."}),400
+        old=users.get(source_email,{}) if isinstance(users.get(source_email,{}),dict) else {}
+        if not old and not password: return jsonify({"ok":False,"error":"Password is required for a new user."}),400
+        rec=dict(old); rec["name"]=name; rec["status"]=status; rec["access"]=access
+        if role: rec["role"]=role
+        elif "role" in rec: rec.pop("role",None)
+        if password:
+            from werkzeug.security import generate_password_hash
+            rec.pop("password",None); rec["password_hash"]=generate_password_hash(password)
+        elif "password_hash" not in rec and "password" not in rec:
+            return jsonify({"ok":False,"error":"Existing user has no stored password. Set a new password."}),400
+        if source_email != email and source_email in users: users.pop(source_email,None)
+        users[email]=rec; payload["users"]=users
+        pub=_save_admin_json(USERS_JSON_PATH,payload,f"Admin update user {email}")
+        if source_email != email:
+            mp_payload=_mapping_payload(); mappings=mp_payload.get("mappings",{}); mappings[email]=mappings.pop(source_email,{"shops":[]}); mp_payload["mappings"]=mappings
+            _save_admin_json(MAPPING_JSON_PATH,mp_payload,f"Move shop mappings from {source_email} to {email}")
+        return jsonify({"ok":True,"message":"User saved.","published":pub.get("published",False),"user":next((x for x in _admin_access_rows() if x.get("email")==email),{})})
+    except Exception as e:
+        return jsonify({"ok":False,"error":str(e)}),500
+
+
+@app.post("/api/admin/user/delete")
+def admin_user_delete():
+    if not _admin_required(): return jsonify({"ok":False,"error":"Admin access required."}),403
+    try:
+        email=str((request.get_json(silent=True) or {}).get("email","")).strip().lower()
+        if not email:return jsonify({"ok":False,"error":"Email is required."}),400
+        if email==str(session.get("user_email","")).strip().lower(): return jsonify({"ok":False,"error":"You cannot delete the currently signed-in admin."}),400
+        payload=_load_users_config(); users=payload.get("users",{})
+        if email not in users:return jsonify({"ok":False,"error":"User not found."}),404
+        del users[email]; payload["users"]=users
+        pub=_save_admin_json(USERS_JSON_PATH,payload,f"Admin delete user {email}")
+        # Remove the deleted user's shop assignments too.
+        mp_payload=_mapping_payload(); mappings=mp_payload.get("mappings",{}); mappings.pop(email,None); mp_payload["mappings"]=mappings
+        _save_admin_json(MAPPING_JSON_PATH,mp_payload,f"Remove mappings for deleted user {email}")
+        return jsonify({"ok":True,"message":"User deleted.","published":pub.get("published",False)})
+    except Exception as e:return jsonify({"ok":False,"error":str(e)}),500
+
+
+@app.post("/api/admin/mapping/save")
+def admin_mapping_save():
+    if not _admin_required(): return jsonify({"ok":False,"error":"Admin access required."}),403
+    try:
+        p=request.get_json(silent=True) or {}; email=str(p.get("email","")).strip().lower(); raw=p.get("shops",[]) or []
+        if not email:return jsonify({"ok":False,"error":"User email is required."}),400
+        if not _user_record(email):return jsonify({"ok":False,"error":"Target user does not exist."}),404
+        shops=[]
+        for x in raw:
+            z=_normalize_shop_obj(x)
+            if z and z["name"]: shops.append(z)
+        # Only active shops are usable by entry, but keep inactive assignments visible for admin.
+        ded=[]; seen=set()
+        for x in shops:
+            k=(x["code"],x["name"])
+            if k not in seen:seen.add(k);ded.append(x)
+        payload=_mapping_payload(); payload["mappings"][email]={"shops":ded}
+        pub=_save_admin_json(MAPPING_JSON_PATH,payload,f"Admin update shop mapping for {email}")
+        return jsonify({"ok":True,"message":"Shop assignment updated.","shops":ded,"published":pub.get("published",False)})
+    except Exception as e:return jsonify({"ok":False,"error":str(e)}),500
+
+
+@app.post("/api/admin/shop/save")
+def admin_shop_save():
+    if not _admin_required(): return jsonify({"ok":False,"error":"Admin access required."}),403
+    try:
+        p=request.get_json(silent=True) or {}; z=_normalize_shop_obj(p)
+        if not z:return jsonify({"ok":False,"error":"Shop name is required."}),400
+        shops=_read_shop_directory(); old_code=str(p.get("original_code","") or "").strip(); old_name=str(p.get("original_name","") or "").strip()
+        replaced=False
+        for i,x in enumerate(shops):
+            if (old_code and x["code"]==old_code) or (old_name and x["name"]==old_name) or (z["code"] and x["code"]==z["code"]):
+                shops[i]=z; replaced=True
+        if not replaced: shops.append(z)
+        shops=sorted(shops,key=lambda x:(x["name"].lower(),x["code"].lower()))
+        pub=_save_admin_json(SHOPS_JSON_PATH,{"shops":shops},f"Admin save shop {z['name']}")
+        # Propagate changed shop metadata to all mappings by original code/name.
+        mp=_mapping_payload(); mappings=mp.get("mappings",{})
+        for email,val in list(mappings.items()):
+            raw=val.get("shops",[]) if isinstance(val,dict) else val
+            out=[]
+            for item in raw if isinstance(raw,list) else []:
+                q=_normalize_shop_obj(item)
+                if not q:continue
+                if (old_code and q["code"]==old_code) or (old_name and q["name"]==old_name) or (z["code"] and q["code"]==z["code"]): q=dict(z)
+                out.append(q)
+            mappings[email]={"shops":out}
+        mp["mappings"]=mappings; _save_admin_json(MAPPING_JSON_PATH,mp,f"Propagate shop directory update {z['name']}")
+        return jsonify({"ok":True,"message":"Shop saved.","shop":z,"published":pub.get("published",False)})
+    except Exception as e:return jsonify({"ok":False,"error":str(e)}),500
+
+
+@app.post("/api/admin/shop/delete")
+def admin_shop_delete():
+    if not _admin_required(): return jsonify({"ok":False,"error":"Admin access required."}),403
+    try:
+        p=request.get_json(silent=True) or {}; code=str(p.get("code","") or "").strip(); name=str(p.get("name","") or "").strip()
+        mp=_admin_mapping_rows()
+        if any((code and r["code"]==code) or (name and r["name"]==name) for r in mp): return jsonify({"ok":False,"error":"This shop is assigned to a user. Remove its assignments first."}),400
+        shops=[x for x in _read_shop_directory() if not ((code and x["code"]==code) or (name and x["name"]==name))]
+        _save_admin_json(SHOPS_JSON_PATH,{"shops":shops},f"Admin delete shop {name or code}")
+        return jsonify({"ok":True,"message":"Shop removed."})
+    except Exception as e:return jsonify({"ok":False,"error":str(e)}),500
+
+
+@app.get("/api/admin/export/<kind>")
+def admin_export(kind):
+    if not _admin_required(): return jsonify({"ok":False,"error":"Admin access required."}),403
+    try:
+        if kind=="users": path=USERS_JSON_PATH
+        elif kind=="mapping": path=MAPPING_JSON_PATH
+        elif kind=="shops":
+            path=SHOPS_JSON_PATH
+            if not os.path.exists(path): _atomic_write_json(path,{"shops":_read_shop_directory()})
+        else:return jsonify({"ok":False,"error":"Unknown export."}),400
+        return send_file(path,as_attachment=True,download_name=os.path.basename(path),mimetype="application/json")
+    except Exception as e:return jsonify({"ok":False,"error":str(e)}),500
+
+
+@app.post("/api/admin/upload-preview")
+def admin_upload_preview():
+    if not _admin_required(): return jsonify({"ok":False,"error":"Admin access required."}),403
+    try:
+        df=_read_upload_excel(request.files.get("file")); headers=[str(x) for x in df.columns]
+        return jsonify({"ok":True,"headers":headers,"rows":int(len(df)),"suggestions":{"ean":_header_auto(headers,["ean","ean code","sku code","barcode","barcode no","product code"]),"stock":_header_auto(headers,["stock","stock qty","quantity","qty","physical stock"]),"tester":_header_auto(headers,["tester","tester qty","tester quantity"])},"sample":json_records(df.head(5))})
+    except Exception as e:return jsonify({"ok":False,"error":str(e)}),400
+
+
+@app.post("/api/admin/upload-submit")
+def admin_upload_submit():
+    if not _admin_required(): return jsonify({"ok":False,"error":"Admin access required."}),403
+    try:
+        p=request.form; result=_admin_build_submission(request.files.get("file"),p.get("email"),p.get("store"),p.get("ean_header"),p.get("stock_header"),p.get("tester_header"),p.get("entry_no"))
+        return jsonify({"ok":True,"message":"Stock uploaded and submitted on behalf of the selected user.",**result})
+    except Exception as e:return jsonify({"ok":False,"error":str(e)}),400
+
+
+@app.post("/api/admin/upload-link")
+def admin_upload_link():
+    if not _admin_required(): return jsonify({"ok":False,"error":"Admin access required."}),403
+    try:
+        p=request.get_json(silent=True) or {}; email=str(p.get("email","")).strip().lower(); store=str(p.get("store","")).strip(); hours=int(p.get("hours") or UPLOAD_LINK_HOURS)
+        if not _user_record(email):return jsonify({"ok":False,"error":"Target user does not exist."}),404
+        mp=load_mapping(True); allowed=set(mp.loc[mp["Email ID"].astype(str).str.lower()==email,"Store Name"].astype(str).str.strip())
+        if store not in allowed:return jsonify({"ok":False,"error":"Selected shop is not assigned to the user."}),400
+        hours=max(1,min(hours,168)); token=_upload_token({"email":email,"store":store,"issued_by":str(session.get("user_email"))},hours)
+        base=request.url_root.rstrip("/"); url=f"{base}/manual-upload?t={token}"
+        return jsonify({"ok":True,"url":url,"expires_in_hours":hours,"email":email,"store":store})
+    except Exception as e:return jsonify({"ok":False,"error":str(e)}),400
+
+
+@app.get("/manual-upload")
+def manual_upload_page():
+    token=str(request.args.get("t","")).strip(); payload=_verify_upload_token(token)
+    if not payload:return render_template("manual_upload.html",invalid=True),403
+    return render_template("manual_upload.html",invalid=False,token=token,email=payload["email"],store=payload["store"],expires_at=datetime.fromtimestamp(int(payload["exp"]),tz=timezone.utc).isoformat())
+
+
+@app.post("/manual-upload/preview")
+def manual_upload_preview():
+    try:
+        token=str(request.form.get("token","")).strip(); payload=_verify_upload_token(token)
+        if not payload:return jsonify({"ok":False,"error":"This upload link is invalid or expired."}),403
+        df=_read_upload_excel(request.files.get("file")); headers=[str(x) for x in df.columns]
+        return jsonify({"ok":True,"headers":headers,"rows":int(len(df)),"suggestions":{"ean":_header_auto(headers,["ean","ean code","sku code","barcode","barcode no","product code"]),"stock":_header_auto(headers,["stock","stock qty","quantity","qty","physical stock"]),"tester":_header_auto(headers,["tester","tester qty","tester quantity"])}})
+    except Exception as e:return jsonify({"ok":False,"error":str(e)}),400
+
+
+@app.post("/manual-upload/submit")
+def manual_upload_submit():
+    try:
+        token=str(request.form.get("token","")).strip(); payload=_verify_upload_token(token)
+        if not payload:return jsonify({"ok":False,"error":"This upload link is invalid or expired."}),403
+        result=_admin_build_submission(request.files.get("file"),payload["email"],payload["store"],request.form.get("ean_header"),request.form.get("stock_header"),request.form.get("tester_header"),request.form.get("entry_no"))
+        return jsonify({"ok":True,"message":"Stock uploaded successfully.",**result})
+    except Exception as e:return jsonify({"ok":False,"error":str(e)}),400
 
 @app.get("/admin")
 def admin():

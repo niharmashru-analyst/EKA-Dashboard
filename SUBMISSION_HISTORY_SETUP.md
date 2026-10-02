@@ -25,3 +25,9 @@ Old rows that were saved before Entry Number support may not have an `entry_no`.
 If Render still points to an older Apps Script deployment, redeploy the updated script and make sure SUBMISSION_API_URL points to the new /exec deployment URL.
 
 Regular field users see only their own submissions for their mapped shops. Admin sees all submissions. History filters out Total = 0 rows.
+
+## Admin Control Center / v4
+
+The current build includes full admin operations at `/admin`, including user CRUD, shop master, shop assignment, admin stock upload, secure manual upload links and submission audit.
+
+If remote submissions are enabled, use `Google_Apps_Script_Submissions_v4_Admin.gs` and deploy a new Web App version. It is backward-compatible with the older submission columns and migrates the `Submissions` sheet to the v4 audit schema.

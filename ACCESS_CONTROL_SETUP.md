@@ -1,83 +1,57 @@
-# CORMATE Email + Password Access Control
+# CORMATE / RENÉE Access Control
 
-## User access
-Edit `data/users.json` and redeploy.
-
-Example:
-```json
-{
-  "users": {
-    "user@company.com": {
-      "name": "User Name",
-      "password": "UserPassword",
-      "access": ["stock_entry"],
-      "status": "Active"
-    },
-    "manager@company.com": {
-      "name": "Manager",
-      "password": "ManagerPassword",
-      "access": ["stock_entry", "dashboard"],
-      "status": "Active"
-    }
-  }
-}
-```
+## Workspaces
 
 Supported access values:
 - `stock_entry`
 - `dashboard`
+- `admin`
 
-If a user has one access, they are redirected there automatically. If they have multiple accesses, they see the CORMATE workspace chooser.
+An `admin` account automatically receives **Stock Entry + Dashboard + Admin** and can use the admin-only operational controls.
 
-## Admin
-Set these in Render Environment Variables:
+## Admin Control Center
+
+Open `/admin` after signing in as an admin.
+
+Admin can:
+- create/edit/delete users
+- activate/deactivate users
+- reset passwords
+- change role/designation
+- assign Stock Entry / Dashboard / Admin access
+- assign multiple shops to a user
+- create/edit/deactivate shops
+- review shop-to-user assignments
+- upload stock on behalf of a user from Excel/CSV
+- choose EAN / Stock / Tester columns during upload
+- generate temporary secure upload links for users
+- review recent submission audit records
+- download configuration backups
+
+## Shop mapping
+
+`data/mapping.json` remains the operational email-to-shop mapping. `data/shops.json` is the shop master used by the admin panel.
+
+## Admin login
+
+The separate Render environment variables remain supported:
 - `ADMIN_EMAIL`
 - `ADMIN_PASSWORD`
 - `SECRET_KEY`
 
-The admin account automatically has stock entry, dashboard, and admin access. The admin panel is at `/admin` after login.
+A user record containing `admin` in `access` is also treated as an admin in the current build.
 
-## Shop mapping
-Keep using the existing `data/mapping.json` for email-to-shop mapping. The signed-in email is enforced by the backend for stock entry and inward APIs.
+## Persistence on Render
 
-## Important
-The included sample user password is `ChangeMe@2026`. Change it before production. If the repository is public, do not store real user passwords in plain text; use a private repository or switch entries to `password_hash`.
+Admin edits are written to the configured JSON files immediately. Render's default filesystem is ephemeral across some redeploy/replacement events. For permanent admin changes use either:
 
+1. a persistent Render disk, or
+2. optional GitHub persistence:
+   - `GITHUB_CONFIG_TOKEN`
+   - `GITHUB_CONFIG_REPO`
+   - `GITHUB_CONFIG_BRANCH`
+   - `GITHUB_USERS_PATH`
+   - `GITHUB_MAPPING_PATH`
+   - `GITHUB_SHOPS_PATH`
 
-## Render environment variables
-
-For the CORMATE login/admin system, set these on Render:
-
-- `SECRET_KEY` — **required for production**. Use a long random value.
-- `ADMIN_EMAIL` — **recommended**; defaults to `admin@cormate.com` if omitted.
-- `ADMIN_PASSWORD` — **required if you want the separate Admin login**.
-
-The following are conditional and are not required by access control itself:
-
-- `GEMINI_API_KEY` — required only for the Analyst/Gemini chat feature.
-- `MAPPING_JSON_URL` — optional; otherwise the app reads `data/mapping.json`.
-- `USERS_JSON_PATH` — optional; otherwise the app reads `data/users.json`.
-
-Existing Excel/submission/variance environment variables used by the dashboard remain as configured in your current Render service.
-
-### Mapping JSON formats
-
-The app accepts both the older `users` format and the VBA-generated `mappings` format:
-
-```json
-{
-  "mappings": {
-    "user@company.com": {
-      "shops": [
-        {
-          "code": "S001",
-          "name": "Mumbai Airport",
-          "status": "Active"
-        }
-      ]
-    }
-  }
-}
-```
-
-Inactive shops are ignored by the mapping loader.
+Do not expose the GitHub token to users.
