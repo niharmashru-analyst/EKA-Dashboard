@@ -964,8 +964,11 @@ def _github_publish(path, payload, message):
 
 
 def _save_admin_json(path, payload, message):
-    _atomic_write_json(path, payload)
+    # When GitHub persistence is configured, publish first. This prevents a
+    # failed GitHub write from leaving a misleading local-only admin change
+    # that would disappear on the next Render restart/redeploy.
     result = _github_publish(path, payload, message)
+    _atomic_write_json(path, payload)
     _cache["map_ts"] = 0
     _cache["map_df"] = None
     return result
