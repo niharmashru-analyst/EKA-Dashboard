@@ -10,7 +10,7 @@ This update adds:
 
 ## Apps Script
 
-If `SUBMISSION_API_URL` is configured in Render, replace the existing Apps Script code with `Google_Apps_Script_Submissions_v3.gs` and deploy a new Web App version.
+If `SUBMISSION_API_URL` is configured in Render, replace the existing Apps Script code with `Google_Apps_Script_Submissions_v6.gs` and deploy a new Web App version.
 
 Keep the same `SECRET` value as Render's `SUBMISSION_API_SECRET`.
 
@@ -30,4 +30,4 @@ Regular field users see only their own submissions for their mapped shops. Admin
 
 The current build includes full admin operations at `/admin`, including user CRUD, shop master, shop assignment, admin stock upload, secure manual upload links and submission audit.
 
-If remote submissions are enabled, use `Google_Apps_Script_Submissions_v4_Admin.gs` and deploy a new Web App version. It is backward-compatible with the older submission columns and migrates the `Submissions` sheet to the v4 audit schema.
+If remote submissions are enabled, use `Google_Apps_Script_Submissions_v6.gs` and deploy a new Web App version. It is backward-compatible with the older submission columns and migrates the `Submissions` sheet to the v4 audit schema.

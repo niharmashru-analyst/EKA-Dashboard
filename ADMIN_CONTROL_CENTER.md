@@ -46,7 +46,7 @@ The generated URL is signed with `SECRET_KEY` and expires automatically. The tok
 
 ## Submission backend
 
-Use `Google_Apps_Script_Submissions_v4_Admin.gs` for the submission Google Sheet if remote submissions are enabled. It stores:
+Use `Google_Apps_Script_Submissions_v6.gs` for the submission Google Sheet if remote submissions are enabled. It stores:
 
 - Entry No.
 - Submitted At
@@ -59,6 +59,7 @@ Use `Google_Apps_Script_Submissions_v4_Admin.gs` for the submission Google Sheet
 - Total
 - Submitted By
 - Submission Mode
+- File Name, File Type, Drive File ID, Drive File URL (for manual uploads)
 
 `submission_mode` distinguishes normal field entry from `admin_upload` or other future sources.
 
@@ -86,3 +87,13 @@ The app publishes to GitHub before updating its local runtime copy. If the GitHu
 
 ## Original Upload Storage
 Manual Excel/CSV/PDF uploads are stored in Google Drive under `CORMATE_Uploads/Excel_CSV_Uploads` or `CORMATE_Uploads/PDF_Uploads`. The `Submissions` sheet records the Drive file URL; PDF uploads are also logged in `PDF Uploads`.
+
+
+## Apps Script v6 setup
+1. Paste `Google_Apps_Script_Submissions_v6.gs` over the existing script.
+2. Run `authorizeOnce()` once and accept the Drive/Sheets permissions.
+3. Deploy > Manage deployments > Edit > **New version**.
+4. `SUBMISSION_API_SECRET` on Render must match the script secret (Script Property `SECRET`, or the fallback constant in the file).
+5. Keep `ADMIN_UPLOAD_MAX_MB` at 15 or lower - the script rejects larger files.
+
+v6 validates before saving to Drive, locks writes, ignores repeated `entry_no` submissions (returns the same `saved_rows`), stores text columns as plain text, and accepts PDF, CSV, XLSX, XLSM and XLS only.
