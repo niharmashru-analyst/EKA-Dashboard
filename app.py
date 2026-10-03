@@ -1427,7 +1427,7 @@ def _normalize_ean(v):
     return _norm_ean_value(v)
 
 
-def _admin_build_submission(file_storage, email, store, ean_header, stock_header, tester_header="", entry_no=""):
+def _admin_build_submission(file_storage, email, store, ean_header, stock_header, tester_header="", entry_no="", submitted_by="", submission_mode="admin_upload"):
     email=str(email or "").strip().lower(); store=str(store or "").strip()
     rec=_user_record(email)
     if not rec: raise RuntimeError("Target user does not exist.")
@@ -1475,7 +1475,7 @@ def _admin_build_submission(file_storage, email, store, ean_header, stock_header
             agg[key]["Stock"]+=r["Stock"]; agg[key]["Tester"]+=r["Tester"]; agg[key]["Total"]+=r["Total"]
     cleaned=list(agg.values())
     entry_no=str(entry_no or "").strip() or ("STK-"+datetime.now().strftime("%Y%m%d-%H%M%S")+"-"+secrets.token_hex(2).upper())
-    payload={"entry_no":entry_no,"email":email,"store_name":store,"rows":cleaned,"submitted_by":str(session.get("user_email") or "admin"),"submission_mode":"admin_upload"}
+    payload={"entry_no":entry_no,"email":email,"store_name":store,"rows":cleaned,"submitted_by":str(submitted_by or session.get("user_email") or email),"submission_mode":str(submission_mode or "admin_upload")}
     if SUBMISSION_API_URL:
         result=remote_request("POST",payload) or {}
         if not result.get("ok"):
@@ -1484,7 +1484,7 @@ def _admin_build_submission(file_storage, email, store, ean_header, stock_header
         if saved!=len(cleaned): raise RuntimeError(f"Submission mismatch: sent {len(cleaned)} rows but service saved {saved}.")
     else:
         saved=save_local_submission(payload)
-    remember_submission(entry_no,email,store,cleaned,str(session.get("user_email") or "admin"))
+    remember_submission(entry_no,email,store,cleaned,str(submitted_by or session.get("user_email") or email))
     return {"entry_no":entry_no,"saved_rows":saved,"skipped_rows":skipped,"target_email":email,"store_name":store}
 
 def _admin_access_rows():
@@ -1753,29 +1753,100 @@ def admin_upload_link():
 
 @app.get("/manual-upload")
 def manual_upload_page():
-    token=str(request.args.get("t","")).strip(); payload=_verify_upload_token(token)
-    if not payload:return render_template("manual_upload.html",invalid=True),403
-    return render_template("manual_upload.html",invalid=False,token=token,email=payload["email"],store=payload["store"],expires_at=datetime.fromtimestamp(int(payload["exp"]),tz=timezone.utc).isoformat())
+    # Shareable public manual-submission link. If an older admin-generated token
+    # is supplied, keep supporting it for backwards compatibility.
+    token=str(request.args.get("t","")).strip()
+    payload=_verify_upload_token(token) if token else None
+    if token and not payload:
+        return render_template("manual_upload.html", invalid=True, public_mode=False), 403
+    return render_template(
+        "manual_upload.html",
+        invalid=False,
+        public_mode=not bool(payload),
+        token=token,
+        email=(payload or {}).get("email", ""),
+        store=(payload or {}).get("store", ""),
+        expires_at=datetime.fromtimestamp(int(payload["exp"]),tz=timezone.utc).isoformat() if payload else ""
+    )
+
+
+@app.get("/manual-upload/shops")
+def manual_upload_shops():
+    try:
+        email=str(request.args.get("email","")).strip().lower()
+        if not email:
+            return jsonify({"ok":False,"error":"Enter your email address first."}),400
+        rec=_user_record(email)
+        if not rec:
+            return jsonify({"ok":False,"error":"This email address is not registered for stock entry."}),404
+        if str(rec.get("status","Active")).strip().lower() not in {"active","enabled"}:
+            return jsonify({"ok":False,"error":"This email address is inactive."}),403
+        mp=load_mapping(True)
+        stores=sorted(set(mp.loc[mp["Email ID"].astype(str).str.lower()==email,"Store Name"].astype(str).str.strip()))
+        stores=[x for x in stores if x]
+        if not stores:
+            return jsonify({"ok":False,"error":"No shop is mapped to this email address."}),404
+        return jsonify({"ok":True,"email":email,"stores":stores})
+    except Exception as e:
+        return jsonify({"ok":False,"error":str(e)}),400
 
 
 @app.post("/manual-upload/preview")
 def manual_upload_preview():
     try:
-        token=str(request.form.get("token","")).strip(); payload=_verify_upload_token(token)
-        if not payload:return jsonify({"ok":False,"error":"This upload link is invalid or expired."}),403
+        token=str(request.form.get("token","")).strip()
+        payload=_verify_upload_token(token) if token else None
+        if token and not payload:
+            return jsonify({"ok":False,"error":"This upload link is invalid or expired."}),403
+        email=str(request.form.get("email","")).strip().lower() if not payload else payload["email"]
+        store=str(request.form.get("store","")).strip() if not payload else payload["store"]
+        if not email or not store:
+            return jsonify({"ok":False,"error":"Enter your email address and select your shop first."}),400
+        rec=_user_record(email)
+        if not rec:
+            return jsonify({"ok":False,"error":"This email address is not registered for stock entry."}),404
+        if str(rec.get("status","Active")).strip().lower() not in {"active","enabled"}:
+            return jsonify({"ok":False,"error":"This email address is inactive."}),403
+        mp=load_mapping(True)
+        allowed=set(mp.loc[mp["Email ID"].astype(str).str.lower()==email,"Store Name"].astype(str).str.strip())
+        if store not in allowed:
+            return jsonify({"ok":False,"error":"This email is not mapped to the selected shop."}),403
         df=_read_upload_excel(request.files.get("file")); headers=[str(x) for x in df.columns]
-        return jsonify({"ok":True,"headers":headers,"rows":int(len(df)),"suggestions":{"ean":_header_auto(headers,["ean","ean code","sku code","barcode","barcode no","product code"]),"stock":_header_auto(headers,["stock","stock qty","quantity","qty","physical stock"]),"tester":_header_auto(headers,["tester","tester qty","tester quantity"])}})
-    except Exception as e:return jsonify({"ok":False,"error":str(e)}),400
+        return jsonify({"ok":True,"headers":headers,"rows":int(len(df)),"email":email,"store":store,
+                        "suggestions":{"ean":_header_auto(headers,["ean","ean code","ean_code","sku code","barcode","barcode no","product code"]),
+                                       "stock":_header_auto(headers,["stock","stock qty","stock quantity","quantity","qty","physical stock","closing stock"])}})
+    except Exception as e:
+        return jsonify({"ok":False,"error":str(e)}),400
 
 
 @app.post("/manual-upload/submit")
 def manual_upload_submit():
     try:
-        token=str(request.form.get("token","")).strip(); payload=_verify_upload_token(token)
-        if not payload:return jsonify({"ok":False,"error":"This upload link is invalid or expired."}),403
-        result=_admin_build_submission(request.files.get("file"),payload["email"],payload["store"],request.form.get("ean_header"),request.form.get("stock_header"),request.form.get("tester_header"),request.form.get("entry_no"))
+        token=str(request.form.get("token","")).strip()
+        payload=_verify_upload_token(token) if token else None
+        if token and not payload:
+            return jsonify({"ok":False,"error":"This upload link is invalid or expired."}),403
+        email=str(request.form.get("email","")).strip().lower() if not payload else payload["email"]
+        store=str(request.form.get("store","")).strip() if not payload else payload["store"]
+        if not email or not store:
+            return jsonify({"ok":False,"error":"Enter your email address and select your shop first."}),400
+        rec=_user_record(email)
+        if not rec:
+            return jsonify({"ok":False,"error":"This email address is not registered for stock entry."}),404
+        if str(rec.get("status","Active")).strip().lower() not in {"active","enabled"}:
+            return jsonify({"ok":False,"error":"This email address is inactive."}),403
+        mp=load_mapping(True)
+        allowed=set(mp.loc[mp["Email ID"].astype(str).str.lower()==email,"Store Name"].astype(str).str.strip())
+        if store not in allowed:
+            return jsonify({"ok":False,"error":"This email is not mapped to the selected shop."}),403
+        result=_admin_build_submission(
+            request.files.get("file"), email, store,
+            request.form.get("ean_header"), request.form.get("stock_header"), "",
+            request.form.get("entry_no"), submitted_by=email, submission_mode="manual_upload"
+        )
         return jsonify({"ok":True,"message":"Stock uploaded successfully.",**result})
-    except Exception as e:return jsonify({"ok":False,"error":str(e)}),400
+    except Exception as e:
+        return jsonify({"ok":False,"error":str(e)}),400
 
 @app.get("/admin")
 def admin():
