@@ -37,6 +37,8 @@ UPLOAD_LINK_HOURS = int(os.getenv("UPLOAD_LINK_HOURS", "48"))
 # Optional public URL used for shareable manual-upload links.
 # Example on Render: https://your-app.onrender.com
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
+MANUAL_LINK_CONFIG_PATH = os.path.join(BASE_DIR, "data", "manual_link.json")
+
 
 @app.context_processor
 def _asset_helpers():
@@ -1264,6 +1266,15 @@ def _github_publish(path, payload, message):
         raise RuntimeError(str(e))
 
 
+def _manual_link_config():
+    try:
+        with open(MANUAL_LINK_CONFIG_PATH, "r", encoding="utf-8") as f:
+            cfg=json.load(f)
+    except Exception:
+        cfg={"enabled": True}
+    return {"enabled": bool(cfg.get("enabled", True))}
+
+
 def _save_admin_json(path, payload, message):
     # When GitHub persistence is configured, publish first. This prevents a
     # failed GitHub write from leaving a misleading local-only admin change
@@ -1757,13 +1768,28 @@ def admin_upload_submit():
     except Exception as e:return jsonify({"ok":False,"error":str(e)}),400
 
 
-@app.post("/api/admin/upload-link")
-def admin_upload_link():
+@app.get("/api/admin/manual-link")
+def admin_manual_link_get():
+    if not _admin_required(): return jsonify({"ok":False,"error":"Admin access required."}),403
+    base=PUBLIC_BASE_URL or request.url_root.rstrip("/")
+    cfg=_manual_link_config()
+    return jsonify({"ok":True,"url":f"{base}/manual-upload","enabled":cfg["enabled"],"master":True})
+
+
+@app.post("/api/admin/manual-link")
+def admin_manual_link_save():
     if not _admin_required(): return jsonify({"ok":False,"error":"Admin access required."}),403
     try:
-        base=PUBLIC_BASE_URL or request.url_root.rstrip("/")
-        return jsonify({"ok":True,"url":f"{base}/manual-upload","master":True,"message":"Master manual upload link ready. Users enter their registered email and shop on the page."})
+        enabled=bool(request.get_json(silent=True).get("enabled", True))
+        payload={"enabled":enabled}
+        result=_save_admin_json(MANUAL_LINK_CONFIG_PATH,payload,"Admin change master manual upload link")
+        return jsonify({"ok":True,"enabled":enabled,"published":result.get("published",False),"message":"Master manual upload link enabled." if enabled else "Master manual upload link disabled."})
     except Exception as e:return jsonify({"ok":False,"error":str(e)}),400
+
+
+@app.post("/api/admin/upload-link")
+def admin_upload_link():
+    return admin_manual_link_get()
 
 
 @app.get("/manual-upload")
@@ -1799,6 +1825,11 @@ def _master_upload_identity(email, store):
 
 
 def _render_manual_upload(token):
+    # Master link can be enabled/disabled by the Admin Control Center.
+    if not token and not _manual_link_config()["enabled"]:
+        response=make_response(render_template("manual_upload.html",invalid=True,master_link=True,token="",email="",store="",expires_at=""),403)
+        response.headers["Cache-Control"]="no-store, no-cache, must-revalidate, max-age=0"
+        return response
     # Master link: /manual-upload — no temporary token required.
     # Legacy signed links continue to work when a token is supplied.
     if not token:
