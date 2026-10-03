@@ -1791,6 +1791,49 @@ def manual_upload_shops():
         return jsonify({"ok":False,"error":str(e)}),400
 
 
+@app.post("/manual-upload/pdf")
+def manual_upload_pdf():
+    """Accept a previously generated Stock Verification PDF through the same public manual-upload link."""
+    try:
+        token=str(request.form.get("token","" )).strip()
+        payload=_verify_upload_token(token) if token else None
+        if token and not payload:
+            return jsonify({"ok":False,"error":"This upload link is invalid or expired."}),403
+        email=str(request.form.get("email","" )).strip().lower() if not payload else payload["email"]
+        store=str(request.form.get("store","" )).strip() if not payload else payload["store"]
+        if not email or not store:
+            return jsonify({"ok":False,"error":"Enter your email address and select your shop first."}),400
+        rec=_user_record(email)
+        if not rec:
+            return jsonify({"ok":False,"error":"This email address is not registered for stock entry."}),404
+        if str(rec.get("status","Active")).strip().lower() not in {"active","enabled"}:
+            return jsonify({"ok":False,"error":"This email address is inactive."}),403
+        mp=load_mapping(True)
+        allowed=set(mp.loc[mp["Email ID"].astype(str).str.lower()==email,"Store Name"].astype(str).str.strip())
+        if store not in allowed:
+            return jsonify({"ok":False,"error":"This email is not mapped to the selected shop."}),403
+        f=request.files.get("file")
+        if not f or not f.filename:
+            return jsonify({"ok":False,"error":"Please select the Stock Verification PDF."}),400
+        name=os.path.basename(f.filename)
+        if not name.lower().endswith(".pdf"):
+            return jsonify({"ok":False,"error":"Only PDF files are accepted in this section."}),400
+        raw=f.read()
+        if not raw or not raw.startswith(b"%PDF"):
+            return jsonify({"ok":False,"error":"The uploaded file does not appear to be a valid PDF."}),400
+        if len(raw)>10*1024*1024:
+            return jsonify({"ok":False,"error":"PDF is too large. Maximum allowed size is 10 MB."}),400
+        entry_no=str(request.form.get("entry_no","" )).strip() or ("PDF-"+datetime.now().strftime("%Y%m%d-%H%M%S")+"-"+secrets.token_hex(2).upper())
+        payload={"type":"pdf_upload","entry_no":entry_no,"email":email,"store_name":store,"file_name":name,"pdf_base64":base64.b64encode(raw).decode("ascii"),"uploaded_by":email,"submission_mode":"manual_pdf"}
+        if not SUBMISSION_API_URL:
+            return jsonify({"ok":False,"error":"PDF storage service is not configured. Please use the Excel/CSV upload or ask the administrator to enable PDF storage."}),503
+        result=remote_request("POST",payload) or {}
+        if not result.get("ok"):
+            return jsonify({"ok":False,"error":result.get("error","PDF upload service rejected the file."),"remote":result}),502
+        return jsonify({"ok":True,"message":"PDF uploaded successfully.","entry_no":entry_no,"file_name":name,"file_url":result.get("file_url","")})
+    except Exception as e:
+        return jsonify({"ok":False,"error":str(e)}),400
+
 @app.post("/manual-upload/preview")
 def manual_upload_preview():
     try:

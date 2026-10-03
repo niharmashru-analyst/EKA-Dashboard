@@ -63,6 +63,30 @@ function doPost(e){
   try{
     const body=JSON.parse((e&&e.postData&&e.postData.contents)||'{}');
     if(!check_(body.secret))return json_({ok:false,error:'Unauthorized'});
+
+    // Same public manual-upload link can also receive a previously generated PDF.
+    // The PDF is stored in Drive and indexed in a separate sheet for audit/recovery.
+    if(String(body.type||'').trim()==='pdf_upload'){
+      const email=String(body.email||'').trim().toLowerCase();
+      const store=String(body.store_name||'').trim();
+      const entryNo=String(body.entry_no||('PDF-'+Utilities.formatDate(new Date(),Session.getScriptTimeZone(),'yyyyMMdd-HHmmss')+'-'+Utilities.getUuid().slice(0,4).toUpperCase()));
+      const fileName=String(body.file_name||('Stock_Verification_'+entryNo+'.pdf')).replace(/[^a-zA-Z0-9._ -]/g,'_');
+      const b64=String(body.pdf_base64||'');
+      if(!email||!store||!b64)return json_({ok:false,error:'Missing PDF upload data'});
+      const bytes=Utilities.base64Decode(b64);
+      if(bytes.length>10*1024*1024)return json_({ok:false,error:'PDF is too large. Maximum allowed size is 10 MB.'});
+      const blob=Utilities.newBlob(bytes,'application/pdf',fileName);
+      const folderName='CORMATE Stock Verification PDFs';
+      const folders=DriveApp.getFoldersByName(folderName);
+      const folder=folders.hasNext()?folders.next():DriveApp.createFolder(folderName);
+      const file=folder.createFile(blob);
+      const logSh=SpreadsheetApp.getActiveSpreadsheet().getSheetByName('PDF Uploads') || SpreadsheetApp.getActiveSpreadsheet().insertSheet('PDF Uploads');
+      if(logSh.getLastRow()===0)logSh.appendRow(['entry_no','uploaded_at','email','store_name','file_name','file_url','submission_mode']);
+      logSh.appendRow([entryNo,new Date().toISOString(),email,store,fileName,file.getUrl(),'manual_pdf']);
+      SpreadsheetApp.flush();
+      return json_({ok:true,entry_no:entryNo,file_name:fileName,file_url:file.getUrl()});
+    }
+
     const sh=sheet_(); const now=new Date().toISOString();
     const email=String(body.email||'').trim(); const store=String(body.store_name||'').trim();
     const entryNo=String(body.entry_no||('STK-'+Utilities.formatDate(new Date(),Session.getScriptTimeZone(),'yyyyMMdd-HHmmss')+'-'+Utilities.getUuid().slice(0,4).toUpperCase()));

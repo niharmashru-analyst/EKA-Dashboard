@@ -5,7 +5,7 @@
 <div class="ey">CORMATE • SECURE STOCK UPLOAD</div><h1>Manual Stock Submission</h1>
 {% if invalid %}<div class="card"><h3>Link unavailable</h3><p class="err">This upload link is invalid or expired. Please use the current shared link.</p></div>{% else %}
 <div class="card">
-  <div class="note">Use this page only when the normal stock-entry page cannot be used. You only need your <b>registered email</b>, your <b>shop</b>, and an <b>Excel / CSV</b> file.</div>
+  <div class="note">Use this page when the normal stock-entry page cannot be used. You can upload either an <b>Excel / CSV</b> stock file or a <b>Stock Verification PDF</b> that you already downloaded after submission.</div>
   {% if public_mode %}
   <div class="grid" style="margin-top:16px">
     <div class="field"><label>Email Address</label><input id="email" class="input" type="email" placeholder="Enter your registered email"></div>
@@ -18,6 +18,10 @@
   {% endif %}
 
   <div id="uploadArea" class="{% if public_mode %}hidden{% endif %}">
+    <div class="note" style="border-color:rgba(255,43,138,.35)"><b>Already downloaded the Stock Verification PDF?</b><br>Upload it here using the same link. No column selection is required for PDF.</div>
+    <div class="drop"><input id="pdfFile" type="file" accept="application/pdf,.pdf"></div>
+    <button id="pdfBtn" class="btn secondary" onclick="uploadPdf()">Upload Stock Verification PDF</button>
+    <div id="pdfResult" class="status"></div>
     <div class="step" style="margin-top:18px"><div class="stepno">1</div><div><b>Select your Excel / CSV</b><div class="small">Only .xlsx, .xlsm or .csv files are accepted.</div></div></div>
     <div class="drop"><input id="file" type="file" accept=".xlsx,.xlsm,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel.sheet.macroEnabled.12"></div>
     <button id="readBtn" class="btn secondary" onclick="preview()">Read File Headers</button>
@@ -41,6 +45,7 @@ function esc(v){return String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&l
 $('email')?.addEventListener('change',()=>{$('store').innerHTML='<option value="">Enter email first</option>';$('store').disabled=true;});
 $('store')?.addEventListener('change',()=>{if($('store').value)$('uploadArea').classList.remove('hidden')});
 function identity(){if(!publicMode)return {email:{{ email|tojson }},store:{{ store|tojson }}};let email=$('email').value.trim().toLowerCase(),store=$('store').value;if(!email||!store)throw Error('Enter your email and select your shop first.');return {email,store}}
+async function uploadPdf(){try{let id=identity(),f=$("pdfFile").files[0];if(!f)throw Error("Choose the Stock Verification PDF first.");let fd=new FormData();fd.append("file",f);fd.append("token",token);fd.append("email",id.email);fd.append("store",id.store);$("pdfBtn").disabled=true;$("pdfBtn").textContent="Uploading PDF…";let j=await api("/manual-upload/pdf",{method:"POST",body:fd});setStatus("pdfResult","✓ PDF uploaded successfully."+(j.file_name?" "+esc(j.file_name):""),true)}catch(e){setStatus("pdfResult",e.message,false)}finally{$("pdfBtn").disabled=false;$("pdfBtn").textContent="Upload Stock Verification PDF"}}
 async function preview(){try{let id=identity(),f=$('file').files[0];if(!f)throw Error('Choose an Excel / CSV file first.');let fd=new FormData();fd.append('file',f);fd.append('token',token);fd.append('email',id.email);fd.append('store',id.store);$('readBtn').disabled=true;$('readBtn').textContent='Reading…';let j=await api('/manual-upload/preview',{method:'POST',body:fd});['ean','stock'].forEach(k=>$(k).innerHTML='<option value="">Select header</option>'+j.headers.map(h=>'<option value="'+escAttr(h)+'">'+esc(h)+'</option>').join(''));if(j.suggestions.ean)$('ean').value=j.suggestions.ean;if(j.suggestions.stock)$('stock').value=j.suggestions.stock;$('mapping').classList.remove('hidden');setStatus('result','✓ '+j.rows.toLocaleString()+' rows found. Confirm EAN and Quantity headers.',true)}catch(e){setStatus('result',e.message,false)}finally{$('readBtn').disabled=false;$('readBtn').textContent='Read File Headers'}}
 async function submitFile(){try{let id=identity(),f=$('file').files[0];if(!f)throw Error('Choose an Excel / CSV file first.');if(!$('ean').value)throw Error('Select the EAN header.');if(!$('stock').value)throw Error('Select the Quantity header.');let fd=new FormData();fd.append('token',token);fd.append('email',id.email);fd.append('store',id.store);fd.append('file',f);fd.append('ean_header',$('ean').value);fd.append('stock_header',$('stock').value);$('submitBtn').disabled=true;$('submitBtn').textContent='Submitting…';let j=await api('/manual-upload/submit',{method:'POST',body:fd});$('result').className='status ok';$('result').innerHTML='<div class="note success"><b>✓ Stock submitted successfully.</b><br>Entry No: '+esc(j.entry_no)+'<br>'+Number(j.saved_rows||0).toLocaleString()+' SKU(s) saved.</div>'; }catch(e){setStatus('result',e.message,false)}finally{$('submitBtn').disabled=false;$('submitBtn').textContent='Submit Stock'}}
 </script></main></body></html>
