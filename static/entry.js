@@ -1,6 +1,7 @@
 let email = '', stores = [], selectedStore = '', master = [], rows = [];
 let submissionHistory = [];
 let lastSubmission = null;
+let pendingEntryNo = '';   // reused if a submit has to be retried, so the server can ignore the duplicate
 let currentPage = 1;
 const PAGE_SIZE = 25;
 let entrySearch = '';
@@ -77,12 +78,38 @@ function updateSummary() {
   $('progressText') && ($('progressText').textContent = `${entered} of ${total} SKU${total === 1 ? '' : 's'} entered`);
 }
 
+const _wait = ms => new Promise(r => setTimeout(r, ms));
+// GET requests are retried (server waking up, 502/503/504, flaky mobile data). POSTs are sent once.
 async function getJson(url, options = {}) {
-  const r = await fetch(url, { cache: 'no-store', ...options });
-  let j;
-  try { j = await r.json(); } catch (_) { throw Error(`Server returned HTTP ${r.status}`); }
-  if (!r.ok || !j.ok) throw Error(j.error || `Request failed (${r.status})`);
-  return j;
+  const isGet = !options.method || String(options.method).toUpperCase() === 'GET';
+  const tries = isGet ? 3 : 1;
+  let lastErr;
+  for (let i = 0; i < tries; i++) {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), isGet ? 45000 : 90000);
+    try {
+      const r = await fetch(url, { cache: 'no-store', ...options, signal: ctl.signal });
+      clearTimeout(timer);
+      if (r.status === 401) { location.href = '/login'; throw Error('Your session expired. Please sign in again.'); }
+      let j;
+      try { j = await r.json(); }
+      catch (_) {
+        if ([502, 503, 504].includes(r.status) && i < tries - 1) { await _wait(1500 * (i + 1)); continue; }
+        throw Error([502, 503, 504].includes(r.status) ? 'The server is starting up or busy. Please try again in a moment.' : `Server returned HTTP ${r.status}`);
+      }
+      if (!r.ok || !j.ok) throw Error(j.error || `Request failed (${r.status})`);
+      return j;
+    } catch (e) {
+      clearTimeout(timer);
+      const transient = e.name === 'AbortError' || e instanceof TypeError;
+      lastErr = e.name === 'AbortError'
+        ? Error(isGet ? 'The server is taking too long to respond. Please try again.' : 'The server did not confirm in time. Check "My Submission History" before submitting again.')
+        : (e instanceof TypeError ? Error('Network problem — check your connection and try again.') : e);
+      if (transient && i < tries - 1) { await _wait(1500 * (i + 1)); continue; }
+      throw lastErr;
+    }
+  }
+  throw lastErr;
 }
 
 async function loadMeta() {
@@ -113,7 +140,7 @@ async function loadMeta() {
     }
     $('continueEntry').disabled = !selectedStore;
     msg(`${stores.length} shop(s) mapped to your signed-in account.`, true);
-    await loadLastSubmissions();
+    loadLastSubmissions();   // not awaited: a slow submission service must never block shop selection
   } catch (e) {
     msg(e.message);
     $('store').disabled = true;
@@ -126,6 +153,7 @@ async function loadMeta() {
 
 async function loadSku() {
   selectedStore=$('store').value||selectedStore; if(!selectedStore) return;
+  pendingEntryNo='';
   const button=$('continueEntry'); if(button){button.disabled=true;button.textContent='Loading…';}
   setEntryLoading(true,'Loading SKU Entry',`Preparing ${selectedStore}…`);
   try {
@@ -172,32 +200,41 @@ function renderLastSubmissions(records) {
   box.classList.remove('hidden');
 }
 
+const fmtWhen = v => { const d = new Date(v); return Number.isNaN(d.getTime()) ? 'Date unavailable' : d.toLocaleString('en-IN', {day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}); };
+let _historyBusy = false;
 async function loadLastSubmissions() {
-  const box=$('lastSubmissionPanel'); if(!box || !email) return;
+  const box=$('lastSubmissionPanel'); if(!box || !email || _historyBusy) return;
+  _historyBusy = true;
+  if (!submissionHistory.length) { box.classList.remove('hidden'); box.innerHTML='<div class="submission-empty">Loading your submission history…</div>'; }
   try {
     const j=await getJson('/api/submissions?_ts='+Date.now());
     submissionHistory=j.records||[];
     const groups={};
     submissionHistory.forEach(r=>{
-      const store=String(r.store_name||'').trim(); if(!stores.includes(store)) return;
+      const store=String(r.store_name||'').trim();
       const ts=String(r.submitted_at||'');
       const key=String(r.entry_no||'').trim() || ('LEGACY-'+ts);
       if(!groups[key]) groups[key]={entry_no:String(r.entry_no||''),submitted_at:ts,email:String(r.email||''),store_name:store,rows:[]};
       groups[key].rows.push(r);
     });
-    const entries=Object.values(groups).sort((a,b)=>new Date(b.submitted_at)-new Date(a.submitted_at)).slice(0,50);
+    const entries=Object.values(groups).sort((a,b)=>(new Date(b.submitted_at)||0)-(new Date(a.submitted_at)||0)).slice(0,50);
     box.classList.remove('hidden');
-    box.innerHTML=`<div class="last-sub-head"><div><b>My Submission History</b><span>Select an entry to view SKU-wise quantities. Only &gt;0 quantities are shown.</span></div><span class="last-sub-refresh">${entries.length} entries</span></div><div class="submission-history-list">${entries.length ? entries.map((e,i)=>{const d=new Date(e.submitted_at);const when=!Number.isNaN(d.getTime())?d.toLocaleString('en-IN',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}):'Date unavailable';const qty=e.rows.reduce((a,r)=>a+Number(r.total||0),0);const no=e.entry_no||('STK-'+(d.toISOString().slice(0,10).replaceAll('-','')));return `<button class="submission-history-item" data-entry-index="${i}"><div><b>${esc(no)}</b><span>${esc(e.store_name)}</span></div><div><span>${esc(when)}</span><span>${e.rows.length} SKU • ${qty.toLocaleString('en-IN')} Qty</span></div></button>`;}).join(''):`<div class="submission-empty">No submitted stock entries found for your mapped shops.</div>`}</div>`;
+    const warn=j.warning?`<div class="submission-empty" style="margin-bottom:8px">Showing saved data — the live refresh is temporarily unavailable.</div>`:'';
+    box.innerHTML=`<div class="last-sub-head"><div><b>My Submission History</b><span>Select an entry to view SKU-wise quantities. Only &gt;0 quantities are shown.</span></div><span class="last-sub-refresh">${entries.length} entries</span></div>${warn}<div class="submission-history-list">${entries.length ? entries.map((e,i)=>{const qty=e.rows.reduce((a,r)=>a+Number(r.total||0),0);const no=e.entry_no||'Historical entry';const by=e.email&&e.email!==email?` • by ${esc(e.email)}`:'';return `<button class="submission-history-item" data-entry-index="${i}"><div><b>${esc(no)}</b><span>${esc(e.store_name)}${by}</span></div><div><span>${esc(fmtWhen(e.submitted_at))}</span><span>${e.rows.length} SKU • ${qty.toLocaleString('en-IN')} Qty</span></div></button>`;}).join(''):`<div class="submission-empty">No submitted stock entries found for your mapped shops.</div>`}</div>`;
     box.querySelectorAll('.submission-history-item').forEach(b=>b.onclick=()=>showSubmissionDetail(entries[Number(b.dataset.entryIndex)]));
-  } catch(e) { box.classList.remove('hidden'); box.innerHTML=`<div class="submission-empty">Could not load submission history: ${esc(e.message)}</div>`; }
+  } catch(e) {
+    box.classList.remove('hidden');
+    box.innerHTML=`<div class="submission-empty">Could not load submission history: ${esc(e.message)} <button class="btn secondary small" id="retryHistory" type="button">Retry</button></div>`;
+    const rb=$('retryHistory'); if(rb) rb.onclick=()=>loadLastSubmissions();
+  } finally { _historyBusy = false; }
 }
 function showSubmissionDetail(entry){
   if(!entry) return;
-  const d=new Date(entry.submitted_at); const when=!Number.isNaN(d.getTime())?d.toLocaleString('en-IN',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}):'Date unavailable';
+  const when=fmtWhen(entry.submitted_at);
   const qty=entry.rows.reduce((a,r)=>a+Number(r.total||0),0);
   const no=entry.entry_no || 'Historical Entry';
   $('lastSubmissionPanel').innerHTML=`<div class="submission-detail"><div class="submission-detail-head"><div><button class="btn secondary small" id="backSubmissionHistory">← Back</button><div class="submission-kicker">SUBMISSION ENTRY</div><h3>${esc(no)}</h3><span>${esc(entry.store_name)} • ${esc(when)}</span></div><div class="submission-detail-kpi"><b>${entry.rows.length}</b><small>SKUs</small><b>${qty.toLocaleString('en-IN')}</b><small>Total Qty</small></div></div><div class="submission-detail-table"><table><thead><tr><th>EAN / SKU</th><th>Product</th><th>Stock</th><th>Tester</th><th>Total</th></tr></thead><tbody>${entry.rows.filter(r=>Number(r.total||0)>0).map(r=>`<tr><td>${esc(r.ean_code||'')}</td><td>${esc(r.product_name||'')}</td><td>${Number(r.stock||0).toLocaleString('en-IN')}</td><td>${Number(r.tester||0).toLocaleString('en-IN')}</td><td><b>${Number(r.total||0).toLocaleString('en-IN')}</b></td></tr>`).join('')}</tbody></table></div></div>`;
-  $('backSubmissionHistory').onclick=loadLastSubmissions;
+  $('backSubmissionHistory').onclick=()=>loadLastSubmissions();
 }
 
 function render() {
@@ -340,7 +377,8 @@ async function submitAll() {
   msg('Submitting entered SKU quantities…', true);
   const enteredRows = rows.filter(r => Number(r.stock || 0) + Number(r.tester || 0) > 0).map(r => ({ ean: r.ean, name: r.name, stock: Number(r.stock || 0), tester: Number(r.tester || 0), total: Number(r.stock || 0) + Number(r.tester || 0) }));
   if (!enteredRows.length) { showPopup('Nothing to submit', 'Please enter Stock or Tester quantity for at least one SKU.', false, false); if (button) { button.disabled=false; button.textContent='Submit Stock'; } return; }
-  const entryNo = 'STK-' + new Date().toISOString().replace(/[-:TZ.]/g,'').slice(0,14) + '-' + Math.random().toString(36).slice(2,6).toUpperCase();
+  if (!pendingEntryNo) pendingEntryNo = 'STK-' + new Date().toISOString().replace(/[-:TZ.]/g,'').slice(0,14) + '-' + Math.random().toString(36).slice(2,6).toUpperCase();
+  const entryNo = pendingEntryNo;
   try {
     const payload = {
       email,
@@ -366,12 +404,14 @@ async function submitAll() {
     lastSubmission = { entryNo: j.entry_no || entryNo, email, store: selectedStore, rows: enteredRows, reportRows, savedRows: saved, timestamp: new Date() };
     showPopup('Submission Successful', `Entry No. ${j.entry_no || entryNo} • ${saved.toLocaleString('en-IN')} SKU rows submitted for ${selectedStore}.`, true, true);
     msg(`${saved.toLocaleString('en-IN')} SKU rows submitted successfully.`, true);
-    await loadLastSubmissions();
+    pendingEntryNo = '';
+    loadLastSubmissions();
     rows.forEach(r => { r.stock = 0; r.tester = 0; });
     currentPage = 1;
     render();
   } catch (e) {
-    showPopup('Submission Failed', e.message || 'The submission could not be completed. No entries were cleared.', false, false);
+    showPopup('Submission Failed', (e.message || 'The submission could not be completed.') + ' Your quantities are still on screen — tap Submit again (it will not create a duplicate).', false, false);
+    loadLastSubmissions();
     msg(`Submission failed: ${e.message}`, false);
   } finally {
     const b = $('submitEntryTop');

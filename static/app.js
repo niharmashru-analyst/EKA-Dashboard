@@ -1,6 +1,6 @@
 const COLS_VERSION='v7';
 let DATA=[],VAR=[],FILTERED=[],filters={},page='overview',charts=[];
-let paretoMode='qty',viewMode=localStorage.getItem('ekaViewMode')||'qty',varianceMetric='qty',varianceShop='',varianceSkuSearch='',varianceIssueOnly=false,DATA_COLUMNS=[],storePerfView='top',skuPerfView='top';
+let paretoMode='qty',viewMode=safeStorageGet('ekaViewMode')||'qty',varianceMetric='qty',varianceShop='',varianceSkuSearch='',varianceIssueOnly=false,DATA_COLUMNS=[],storePerfView='top',skuPerfView='top';
 const FILTER_FIELDS=['Type','Store Name','Pareto','NOD Bucket','Stock Health'];
 const SKU_FILTER_KEY='__sku';
 const moneyL=n=>'₹'+Number(n||0).toLocaleString('en-IN',{maximumFractionDigits:2});
@@ -13,7 +13,7 @@ const metricPairs={
 const valueField=q=>metricPairs[q]?.[viewMode==='value'?1:0]||q;
 const metricFmt=v=>viewMode==='value'?moneyL(v):qty(v);
 const metricLabel=q=>viewMode==='value'?({Stock:'Stock Value','L3M Avg Qty':'L3M Avg Value','LY Qty':'LY Value','Current Month Qty':'Current Month Value'}[q]||q):q;
-function toggleViewMode(){viewMode=viewMode==='qty'?'value':'qty';localStorage.setItem('ekaViewMode',viewMode);render();}
+function toggleViewMode(){viewMode=viewMode==='qty'?'value':'qty';safeStorageSet('ekaViewMode',viewMode);render();}
 const pct1=n=>Number(n||0).toFixed(1)+'%';
 const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 const sum=(a,c)=>a.reduce((x,r)=>x+Number(r[c]||0),0);
@@ -455,8 +455,32 @@ function stores(){
 
 function dataTable(){document.getElementById('app').innerHTML=`<div class="card"><div class="card-title">Complete Data Table</div>${table(FILTERED,tableCols(FILTERED),'datatable',250)}</div>`}
 function openDetailModal(title,sub,rows,mode){let ov=document.getElementById('modalOverlay');document.getElementById('modalTitle').textContent=title;document.getElementById('modalSub').textContent=sub;document.getElementById('modalBody').innerHTML=`<div class="modal-filters"><input id="modalSearch" placeholder="Search SKU / EAN / Product / Shop…"><select id="modalFilter"><option value="">All ${mode==='sku'?'Shops':'SKUs'}</option></select></div><div id="modalTable"></div>`;let opts=mode==='sku'?[...new Set(rows.map(r=>r['Store Name']))]:[...new Set(rows.map(r=>r['Product Name']))];document.getElementById('modalFilter').innerHTML+=opts.sort().map(x=>`<option value="${esc(x)}">${esc(x)}</option>`).join('');let cols=tableCols(rows);function draw(){let q=(document.getElementById('modalSearch').value||'').toLowerCase(),f=document.getElementById('modalFilter').value;let rr=rows.filter(r=>!q||String(r['Product Name']).toLowerCase().includes(q)||String(r['EAN Code']).toLowerCase().includes(q)||String(r['Store Name']).toLowerCase().includes(q)).filter(r=>!f||(mode==='sku'?r['Store Name']===f:r['Product Name']===f));document.getElementById('modalTable').innerHTML=table(rr,cols,'modal-'+mode,2000)}document.getElementById('modalSearch').oninput=draw;document.getElementById('modalFilter').onchange=draw;draw();ov.classList.add('open')}
-async function fetchJson(url,opts){let r=await fetch(url,opts);let ct=r.headers.get('content-type')||'';if(!ct.includes('application/json')){throw Error(r.status===504||r.status===502||r.status===503?'The server took too long to refresh the data (gateway timeout). Please try again in a moment.':`Server returned an unexpected response (HTTP ${r.status}).`)}return r.json()}
-async function loadStock(force=false){let q=new URLSearchParams({_ts:Date.now()});if(force)q.set('refresh','1');let j=await fetchJson('/api/data?'+q,{cache:'no-store'});if(!j.ok)throw Error(j.error);DATA_COLUMNS=j.source_columns||j.columns||[];DATA=j.records.map(r=>({...r,Type:canonicalType(r.Type),Pareto:normalizePareto(r.Pareto),NOD:(Number(r['L3M Avg Qty']||0)>0?(Number(r.Stock||0)*31/Number(r['L3M Avg Qty']||1)):0)}));DATA=DATA.map(r=>({...r,'NOD Bucket':nodBucket(r.NOD),'Growth %':growthPct(r['Current Month Qty'],r['LY Qty']),'LY Active':Number(r['LY Qty']||0)>0,'Stock Health':stockHealth(r.Stock,r['L3M Avg Qty'],r.NOD)}));document.getElementById('sourceBadge').textContent=`${j.source} • ${j.rows.toLocaleString('en-IN')} rows`;renderFilters();render()}
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+// GETs are retried (cold-starting server, 502/503/504, dropped mobile connection); POSTs are never replayed.
+async function fetchJson(url,opts){
+  const o=opts||{};const idempotent=!o.method||String(o.method).toUpperCase()==='GET';const tries=idempotent?3:1;let lastErr;
+  for(let i=0;i<tries;i++){
+    const ctl=new AbortController();const timer=setTimeout(()=>ctl.abort(),idempotent?60000:90000);
+    try{
+      const r=await fetch(url,{...o,signal:ctl.signal});clearTimeout(timer);
+      const ct=r.headers.get('content-type')||'';
+      if(r.status===401){location.href='/login';throw Error('Your session expired. Please sign in again.')}
+      if(!ct.includes('application/json')){
+        if([502,503,504].includes(r.status)&&i<tries-1){await sleep(1500*(i+1));continue}
+        throw Error([502,503,504].includes(r.status)?'The server is starting up or busy. Please try again in a moment.':`Server returned an unexpected response (HTTP ${r.status}).`);
+      }
+      return await r.json();
+    }catch(e){
+      clearTimeout(timer);
+      const transient=e.name==='AbortError'||e instanceof TypeError;
+      lastErr=e.name==='AbortError'?Error('The server is taking too long to respond. Please try again.'):(e instanceof TypeError?Error('Network problem — check your connection and try again.'):e);
+      if(transient&&i<tries-1){await sleep(1500*(i+1));continue}
+      throw lastErr;
+    }
+  }
+  throw lastErr;
+}
+async function loadStock(force=false){let q=new URLSearchParams({_ts:Date.now()});if(force)q.set('refresh','1');let j=await fetchJson('/api/data?'+q,{cache:'no-store'});if(!j.ok)throw Error(j.error);DATA_COLUMNS=j.source_columns||j.columns||[];DATA=j.records.map(r=>({...r,Type:canonicalType(r.Type),Pareto:normalizePareto(r.Pareto),NOD:(Number(r['L3M Avg Qty']||0)>0?(Number(r.Stock||0)*31/Number(r['L3M Avg Qty']||1)):0)}));DATA=DATA.map(r=>({...r,'NOD Bucket':nodBucket(r.NOD),'Growth %':growthPct(r['Current Month Qty'],r['LY Qty']),'LY Active':Number(r['LY Qty']||0)>0,'Stock Health':stockHealth(r.Stock,r['L3M Avg Qty'],r.NOD)}));document.getElementById('sourceBadge').textContent=`${j.source} • ${j.rows.toLocaleString('en-IN')} rows`+(j.as_of?` • updated ${new Date(j.as_of).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}`:'');renderFilters();render()}
 async function ensureVarianceLoaded(force=false){if(force||!VAR.length){let j=await fetchJson('/api/variance?_ts='+Date.now()+(force?'&refresh=1':''),{cache:'no-store'});if(!j.ok)throw Error(j.error);VAR=j.records||[]}render()}
 function varianceCols(rows){
   const preferred=['Store Name','EAN Code','Product Name','Opening Stock Qty','Inward Qty','Tertiary Qty','Calculated Closing Qty','Closing Stock Qty','Stock Variance Qty','Actual Closing Qty','Difference Qty','Live Submission'];
@@ -503,9 +527,9 @@ document.getElementById('sidebarBackdrop')?.addEventListener('click',closeSideba
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeSidebar()});
 document.getElementById('refresh').onclick=async()=>{let b=document.getElementById('refresh');b.disabled=true;b.textContent='↻ Refreshing…';try{if(page==='variance'){VAR=[];await ensureVarianceLoaded(true)}else await loadStock(true)}catch(e){document.getElementById('app').innerHTML=`<div class="error"><b>Refresh failed</b><br>${esc(e.message)}</div>`}finally{b.disabled=false;b.textContent='↻ Refresh'}};
 function syncViewToggle(){const q=document.getElementById('viewQty'),v=document.getElementById('viewValue');q?.classList.toggle('active',viewMode==='qty');v?.classList.toggle('active',viewMode==='value');if(q)q.disabled=page==='variance';if(v)v.disabled=page==='variance';}
-document.getElementById('viewQty')?.addEventListener('click',()=>{viewMode='qty';localStorage.setItem('ekaViewMode',viewMode);syncViewToggle();render()});
-document.getElementById('viewValue')?.addEventListener('click',()=>{viewMode='value';localStorage.setItem('ekaViewMode',viewMode);syncViewToggle();render()});
-document.getElementById('modalClose').onclick=()=>document.getElementById('modalOverlay').classList.remove('open');document.getElementById('modalOverlay').onclick=e=>{if(e.target.id==='modalOverlay')e.currentTarget.classList.remove('open')};load();window.onresize=()=>charts.forEach(c=>c.resize());
+document.getElementById('viewQty')?.addEventListener('click',()=>{viewMode='qty';safeStorageSet('ekaViewMode',viewMode);syncViewToggle();render()});
+document.getElementById('viewValue')?.addEventListener('click',()=>{viewMode='value';safeStorageSet('ekaViewMode',viewMode);syncViewToggle();render()});
+document.getElementById('modalClose').onclick=()=>document.getElementById('modalOverlay').classList.remove('open');document.getElementById('modalOverlay').onclick=e=>{if(e.target.id==='modalOverlay')e.currentTarget.classList.remove('open')};load();let _rz;window.addEventListener('resize',()=>{clearTimeout(_rz);_rz=setTimeout(()=>charts.forEach(c=>{try{c.resize()}catch(_){}}),150)});
 
 
 /* 3-state table sorting: click 1 = ascending, click 2 = descending, click 3 = original order. */

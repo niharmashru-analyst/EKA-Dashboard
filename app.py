@@ -1,4 +1,5 @@
-import io, os, time, json, sqlite3, functools, secrets, base64, hashlib
+import io, os, time, json, sqlite3, functools, secrets, base64, hashlib, threading, gzip, logging
+from datetime import timedelta
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from datetime import datetime, timezone
 import requests
@@ -7,6 +8,13 @@ import re
 from flask import Flask, jsonify, render_template, request, Response, session, redirect, send_file
 
 app = Flask(__name__)
+log = logging.getLogger("cormate")
+# Render (and most hosts) terminate TLS at a proxy. Trust X-Forwarded-* so generated links are https.
+if os.getenv("TRUST_PROXY", "1").strip().lower() not in {"0", "false", "no"}:
+    from werkzeug.middleware.proxy_fix import ProxyFix
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+# Static files change rarely; let browsers cache them (cache-busting is done with ?v=<mtime>).
+app.config["SEND_FILE_MAX_AGE_DEFAULT"] = timedelta(hours=12)
 SECRET_KEY = os.getenv("SECRET_KEY", "").strip()
 if not SECRET_KEY:
     raise RuntimeError("SECRET_KEY must be configured in the server environment; refusing to start with a fallback key.")
@@ -27,24 +35,55 @@ GITHUB_MAPPING_PATH = os.getenv("GITHUB_MAPPING_PATH", "data/mapping.json").stri
 GITHUB_SHOPS_PATH = os.getenv("GITHUB_SHOPS_PATH", "data/shops.json").strip()
 UPLOAD_LINK_HOURS = int(os.getenv("UPLOAD_LINK_HOURS", "48"))
 
+@app.context_processor
+def _asset_helpers():
+    def asset_v(name):
+        """Cache-busting token = file modification time, so browsers re-download only when a file really changed."""
+        try: return int(os.path.getmtime(os.path.join(app.static_folder, name)))
+        except OSError: return 0
+    return {"asset_v": asset_v}
+
+
+_STATIC_GZ = {}
+_COMPRESSIBLE = ("text/", "application/json", "application/javascript", "text/javascript", "image/svg")
+
 @app.after_request
 def compress_response(response):
-    # Keep large JSON responses fast over the network without adding a dependency.
-    if response.direct_passthrough or response.status_code < 200 or response.status_code >= 300:
-        return response
-    if 'Content-Encoding' in response.headers or 'Content-Length' not in response.headers:
-        return response
-    if int(response.headers.get('Content-Length','0') or 0) < 20000:
-        return response
-    accept = request.headers.get('Accept-Encoding','')
-    if 'gzip' not in accept:
-        return response
-    import gzip
-    data = response.get_data()
-    response.set_data(gzip.compress(data, compresslevel=5))
-    response.headers['Content-Encoding'] = 'gzip'
-    response.headers['Content-Length'] = str(len(response.get_data()))
-    response.headers['Vary'] = 'Accept-Encoding'
+    """gzip text responses. Static files are compressed once and kept in memory."""
+    try:
+        if response.status_code < 200 or response.status_code >= 300 or "Content-Encoding" in response.headers:
+            return response
+        if "gzip" not in request.headers.get("Accept-Encoding", ""):
+            return response
+        ctype = (response.mimetype or "").lower()
+        if not any(ctype.startswith(c) for c in _COMPRESSIBLE):
+            return response
+        if response.direct_passthrough:
+            # send_file() / static files: compress once per (path, mtime) and reuse.
+            if request.method != "GET" or not request.path.startswith("/static/"):
+                return response
+            rel = request.path[len("/static/"):]
+            full = os.path.join(app.static_folder, rel)
+            try: key = (full, os.path.getmtime(full))
+            except OSError: return response
+            gz = _STATIC_GZ.get(key)
+            if gz is None:
+                with open(full, "rb") as f: raw = f.read()
+                if len(raw) < 1500: return response
+                gz = gzip.compress(raw, compresslevel=6)
+                _STATIC_GZ[key] = gz
+            response.direct_passthrough = False
+            response.set_data(gz)
+        else:
+            data = response.get_data()
+            if len(data) < 1500: return response
+            response.set_data(gzip.compress(data, compresslevel=4))
+        response.headers["Content-Encoding"] = "gzip"
+        response.headers["Content-Length"] = str(len(response.get_data()))
+        response.headers.add("Vary", "Accept-Encoding")
+        response.headers.pop("ETag", None)
+    except Exception:
+        log.exception("compression skipped")
     return response
 
 @app.after_request
@@ -52,13 +91,15 @@ def security_headers(response):
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    if (response.mimetype or "") == "text/html":
+        response.headers.setdefault("Cache-Control", "private, no-cache")   # always revalidate pages, never share between users
     return response
 EXCEL_URL = os.getenv("EXCEL_URL", "").strip()
 EXCEL_SHEET = os.getenv("EXCEL_SHEET", "Stock_Data").strip()
 VARIANCE_EXCEL_URL = os.getenv("VARIANCE_EXCEL_URL", "").strip()
 VARIANCE_SHEET = os.getenv("VARIANCE_SHEET", "Variance_Data").strip()
 CACHE_SECONDS = int(os.getenv("CACHE_SECONDS", "900"))
-MAPPING_JSON_PATH = os.path.join(app.root_path, "data", "mapping.json")
+MAPPING_JSON_PATH = os.getenv("MAPPING_JSON_PATH", os.path.join(app.root_path, "data", "mapping.json")).strip()
 MAPPING_JSON_URL = os.getenv("MAPPING_JSON_URL", "").strip()
 MAPPING_JSON_SOURCE = os.getenv("MAPPING_JSON_SOURCE", "local").strip().lower()
 MAPPING_CACHE_SECONDS = int(os.getenv("MAPPING_CACHE_SECONDS", "900"))
@@ -88,41 +129,129 @@ def public_download_url(url):
     return urlunparse((parts.scheme, parts.netloc, parts.path, parts.params, urlencode(q, doseq=True), parts.fragment))
 
 
+_data_lock = threading.RLock()      # serialises heavy Excel downloads / parses (never held for cache hits)
+_bg_guard = threading.Lock()
+_bg_running = set()
+MIN_FORCE_INTERVAL = int(os.getenv("MIN_FORCE_INTERVAL", "20"))   # seconds; stops refresh-button stampedes
+STALE_RETRY_SECONDS = 60
+
+
 def load_from_url(url):
     candidates = [url]
     dl = public_download_url(url)
     if dl != url: candidates.append(dl)
     last = None
     for u in candidates:
-        try:
-            r = requests.get(u, timeout=60, allow_redirects=True, headers={"User-Agent":"Mozilla/5.0"})
-            r.raise_for_status(); data = r.content; ctype = (r.headers.get("content-type") or "").lower()
-            if len(data) > 1000 and (data[:2] == b"PK" or "spreadsheet" in ctype or "excel" in ctype): return data
-            if len(data) > 10000 and data[:2] == b"PK": return data
-            last = f"Received non-Excel content ({ctype or 'unknown content-type'})"
-        except Exception as e: last = str(e)
+        for attempt in range(2):
+            try:
+                r = requests.get(u, timeout=(8, 60), allow_redirects=True, headers={"User-Agent":"Mozilla/5.0"})
+                r.raise_for_status(); data = r.content; ctype = (r.headers.get("content-type") or "").lower()
+                if len(data) > 1000 and (data[:2] == b"PK" or "spreadsheet" in ctype or "excel" in ctype): return data
+                if len(data) > 10000 and data[:2] == b"PK": return data
+                last = f"Received non-Excel content ({ctype or 'unknown content-type'})"
+                break                      # a wrong-content answer will not fix itself on retry
+            except Exception as e:
+                last = str(e)
+                time.sleep(0.6)
     raise RuntimeError(last or "Could not download Excel file")
 
 
 def workbook_raw(url, force=False):
-    now = time.time()
-    if force or _cache["workbook_raw"] is None or _cache["workbook_url"] != url or now - _cache["workbook_ts"] >= CACHE_SECONDS:
+    """Download (and cache) the workbook bytes. Callers hold _data_lock."""
+    with _data_lock:
+        now = time.time()
+        age = now - _cache["workbook_ts"]
+        have = _cache["workbook_raw"] is not None and _cache["workbook_url"] == url
+        if have and (age < CACHE_SECONDS) and (not force or age < MIN_FORCE_INTERVAL):
+            return _cache["workbook_raw"]
+        if have and force and age < MIN_FORCE_INTERVAL:
+            return _cache["workbook_raw"]
         raw = load_from_url(url) if url else None
-        _cache.update(workbook_ts=now, workbook_raw=raw, workbook_url=url, workbook_sheets=[], workbook_xls=None)
-    return _cache["workbook_raw"]
+        _cache.update(workbook_ts=time.time(), workbook_raw=raw, workbook_url=url)
+        return raw
 
 
 def read_sheet_from_workbook(url, sheet_name, local_name, force=False):
-    if url:
-        raw = workbook_raw(url, force)
-        if force or _cache.get("workbook_xls") is None:
-            _cache["workbook_xls"] = pd.ExcelFile(io.BytesIO(raw))
-        xls = _cache["workbook_xls"]
-        sheet = sheet_name if sheet_name and sheet_name in xls.sheet_names else xls.sheet_names[0]
-        return pd.read_excel(xls, sheet_name=sheet), f"Linked Excel • {sheet}"
-    local = os.path.join(app.root_path, "data", local_name)
-    if not os.path.exists(local): raise RuntimeError(f"No linked Excel configured and {local_name} is missing.")
-    return pd.read_excel(local, sheet_name=sheet_name if sheet_name else 0), f"Bundled Excel • {sheet_name}"
+    # A fresh ExcelFile per read: pandas/openpyxl readers are NOT thread-safe, so they are never shared.
+    with _data_lock:
+        if url:
+            raw = workbook_raw(url, force)
+            with pd.ExcelFile(io.BytesIO(raw)) as xls:
+                sheet = sheet_name if sheet_name and sheet_name in xls.sheet_names else xls.sheet_names[0]
+                return pd.read_excel(xls, sheet_name=sheet), f"Linked Excel • {sheet}"
+        local = os.path.join(app.root_path, "data", local_name)
+        if not os.path.exists(local): raise RuntimeError(f"No linked Excel configured and {local_name} is missing.")
+        return pd.read_excel(local, sheet_name=sheet_name if sheet_name else 0), f"Bundled Excel • {sheet_name}"
+
+
+def _swr(prefix, ttl, build, force=False):
+    """Stale-while-revalidate cache for a DataFrame.
+
+    * fresh            -> return immediately
+    * stale            -> return the old data immediately and refresh in the background
+    * empty / forced   -> one thread rebuilds (others wait on the lock, then reuse the result)
+    * rebuild fails    -> keep serving the last good data (the error is logged, retried in ~60s)
+    """
+    k_df, k_ts = prefix + "_df", prefix + "_ts"
+    df = _cache.get(k_df); now = time.time()
+    if df is not None and not force:
+        if now - _cache.get(k_ts, 0) < ttl: return df
+        _kick_refresh(prefix, ttl, build)
+        return df
+    with _data_lock:
+        df = _cache.get(k_df)
+        age = time.time() - _cache.get(k_ts, 0)
+        if df is not None and (age < MIN_FORCE_INTERVAL if force else age < ttl):
+            return df                        # another request already refreshed it
+        new = build()
+        _store_df(prefix, new)
+        return new
+
+
+def _store_df(prefix, new):
+    gen = _cache.get("_gen_" + prefix, 0) + 1
+    new.attrs["_gen"] = gen                    # the version travels with the data (no race with readers)
+    _cache["_gen_" + prefix] = gen
+    _cache[prefix + "_df"] = new
+    _cache[prefix + "_ts"] = time.time()
+
+
+def _kick_refresh(prefix, ttl, build):
+    with _bg_guard:
+        if prefix in _bg_running: return
+        _bg_running.add(prefix)
+    def run():
+        try:
+            with _data_lock:
+                _store_df(prefix, build())
+        except Exception:
+            log.exception("Background refresh of %s failed; serving the previous data", prefix)
+            _cache[prefix + "_ts"] = time.time() - ttl + STALE_RETRY_SECONDS
+        finally:
+            with _bg_guard: _bg_running.discard(prefix)
+    threading.Thread(target=run, daemon=True, name=f"refresh-{prefix}").start()
+
+
+def _norm_ean_value(v):
+    """'8901234567890.0', 8.90123456789e12, ' 890... ' -> '8901234567890'."""
+    if v is None: return ""
+    if isinstance(v, float):
+        if v != v: return ""
+        if v.is_integer(): return str(int(v))
+    s = str(v).strip()
+    if not s or s.lower() in {"nan", "none", "null"}: return ""
+    if re.fullmatch(r"\d+\.0+", s): return s.split(".")[0]
+    if re.fullmatch(r"\d+(\.\d+)?[eE]\+?\d+", s):
+        try:
+            from decimal import Decimal
+            d = Decimal(s)
+            if d == d.to_integral_value(): return str(int(d))
+        except Exception: pass
+    return s
+
+
+def norm_ean_series(series):
+    return series.map(_norm_ean_value).astype(str)
 
 
 def clean_stock(df):
@@ -138,7 +267,8 @@ def clean_stock(df):
     if "Current Month Qty" not in df.columns: df["Current Month Qty"] = 0
     if "Current Month Value" not in df.columns: df["Current Month Value"] = 0
     for c in STOCK_OPTIONAL_METRICS: df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
-    for c in ["Type","Store Name","EAN Code","Product Name","Pareto"]: df[c] = df[c].fillna("").astype(str).str.strip()
+    for c in ["Type","Store Name","Product Name","Pareto"]: df[c] = df[c].fillna("").astype(str).str.strip()
+    df["EAN Code"] = norm_ean_series(df["EAN Code"])
     df["Forecast Months"] = df["Pareto"].map({"Top 10":2.0,"Top 25":1.5,"Others":1.0}).fillna(1.0)
     df["Forecast Qty"] = df["L3M Avg Qty"] * df["Forecast Months"]
     # NOD is always calculated from current stock and L3M average sales; never use average NOD.
@@ -158,7 +288,8 @@ def clean_variance(df):
     missing = [c for c in VAR_REQUIRED if c not in df.columns]
     if missing: raise RuntimeError("Variance_Data missing required columns: " + ", ".join(missing))
     for c in VAR_REQUIRED[3:]: df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
-    for c in ["Store Name","EAN Code","Product Name"]: df[c] = df[c].fillna("").astype(str).str.strip()
+    for c in ["Store Name","Product Name"]: df[c] = df[c].fillna("").astype(str).str.strip()
+    df["EAN Code"] = norm_ean_series(df["EAN Code"])
     df["Calculated Closing Qty"] = df["Opening Stock Qty"] + df["Inward Qty"] - df["Tertiary Qty"]
     # Stock Variance compares the movement-derived closing stock with the
     # Closing Stock Qty supplied in Variance_Data. Positive = Closing Stock
@@ -181,15 +312,20 @@ def clean_master(df):
     missing = [c for c in MASTER_REQUIRED if c not in df.columns]
     if missing: raise RuntimeError("SKU_Master missing required columns: " + ", ".join(missing))
     for c in MASTER_REQUIRED: df[c] = df[c].fillna("").astype(str).str.strip()
+    df["EAN Code"] = norm_ean_series(df["EAN Code"])
     return df[df["EAN Code"]!=""].drop_duplicates(subset=["EAN Code"], keep="first")
 
 
-def load_stock(force=False):
-    now=time.time()
-    if force or _cache["stock_df"] is None or now-_cache["stock_ts"]>=CACHE_SECONDS:
-        df,src=read_sheet_from_workbook(EXCEL_URL, EXCEL_SHEET, "data.xlsx", force)
-        _cache.update(stock_ts=now,stock_df=clean_stock(df),stock_source=src)
-    return _cache["stock_df"].copy()
+def _build_stock():
+    df, src = read_sheet_from_workbook(EXCEL_URL, EXCEL_SHEET, "data.xlsx", False)
+    out = clean_stock(df)
+    _cache["stock_source"] = src
+    return out
+
+
+def load_stock(force=False, copy=True):
+    df = _swr("stock", CACHE_SECONDS, _build_stock, force)
+    return df.copy() if copy else df
 
 
 def clean_json_map(payload):
@@ -280,7 +416,7 @@ def load_mapping(force=False):
         except Exception as e:
             raise RuntimeError(f"Could not load MAPPING_JSON_URL: {e}")
     else:
-        path = os.path.join(app.root_path, "data", "mapping.json")
+        path = MAPPING_JSON_PATH
         if not os.path.exists(path):
             raise RuntimeError(f"Canonical mapping JSON not found: {path}")
         try:
@@ -297,25 +433,24 @@ def load_mapping(force=False):
     return mp.copy()
 
 
+def _build_master():
+    with _data_lock:
+        if EXCEL_URL:
+            raw = workbook_raw(EXCEL_URL, False)
+            xls = pd.ExcelFile(io.BytesIO(raw))
+        else:
+            path = os.path.join(app.root_path, "data", "data.xlsx")
+            if not os.path.exists(path):
+                raise RuntimeError("No linked Excel configured and data.xlsx is missing.")
+            xls = pd.ExcelFile(path)
+        with xls:
+            if "SKU_Master" in xls.sheet_names:
+                return clean_master(pd.read_excel(xls, sheet_name="SKU_Master"))
+            return pd.DataFrame(columns=MASTER_REQUIRED)
+
+
 def load_master(force=False):
-    now = time.time()
-    if not force and _cache.get("master_df") is not None and now - _cache.get("master_ts", 0) < CACHE_SECONDS:
-        return _cache["master_df"].copy()
-    if EXCEL_URL:
-        raw = workbook_raw(EXCEL_URL, force)
-        if force or _cache.get("workbook_xls") is None:
-            _cache["workbook_xls"] = pd.ExcelFile(io.BytesIO(raw))
-        xls = _cache["workbook_xls"]
-        master = clean_master(pd.read_excel(xls, sheet_name="SKU_Master")) if "SKU_Master" in xls.sheet_names else pd.DataFrame(columns=MASTER_REQUIRED)
-    else:
-        path = os.path.join(app.root_path, "data", "data.xlsx")
-        if not os.path.exists(path):
-            raise RuntimeError("No linked Excel configured and data.xlsx is missing.")
-        xls = pd.ExcelFile(path)
-        master = clean_master(pd.read_excel(xls, sheet_name="SKU_Master")) if "SKU_Master" in xls.sheet_names else pd.DataFrame(columns=MASTER_REQUIRED)
-    _cache["master_df"] = master
-    _cache["master_ts"] = now
-    return master.copy()
+    return _swr("master", CACHE_SECONDS, _build_master, force).copy()
 
 
 def load_entry_sources(force=False):
@@ -323,15 +458,157 @@ def load_entry_sources(force=False):
     return load_mapping(force), load_master(force)
 
 
+# -----------------------------------------------------------------------------
+# Submissions: one normaliser, one cache, used by Entry history, Admin audit and Variance.
+# -----------------------------------------------------------------------------
+SUBMISSIONS_TTL = int(os.getenv("SUBMISSIONS_CACHE_SECONDS", "20"))
+HISTORY_SCOPE = os.getenv("HISTORY_SCOPE", "shop").strip().lower()          # "shop" (default) or "own"
+HISTORY_MAX_ENTRIES = int(os.getenv("HISTORY_MAX_ENTRIES", "60"))
+RECENT_TTL = 30 * 60
+SUB_COLUMNS = ["entry_no", "submitted_at", "email", "store_name", "ean_code", "product_name", "stock", "tester", "total", "submitted_by"]
+_SUB_ALIASES = {
+    "entry_no": "entry_no", "entry_number": "entry_no", "entry": "entry_no",
+    "submitted_at": "submitted_at", "date": "submitted_at", "timestamp": "submitted_at", "submitted_date": "submitted_at", "submitted_on": "submitted_at",
+    "email": "email", "email_id": "email", "submitted_by_email": "email",
+    "store_name": "store_name", "store": "store_name", "shop_name": "store_name", "shop": "store_name",
+    "ean_code": "ean_code", "ean": "ean_code", "sku": "ean_code", "sku_code": "ean_code",
+    "product_name": "product_name", "product": "product_name", "description": "product_name",
+    "stock": "stock", "stock_qty": "stock", "tester": "tester", "tester_qty": "tester",
+    "total": "total", "total_qty": "total", "submitted_by": "submitted_by",
+}
+_subs = {"df": None, "ts": 0.0, "gen": 0, "error": "", "refreshing": False}
+_subs_lock = threading.Lock()
+_recent = []
+_recent_lock = threading.Lock()
+
+
+def _empty_subs():
+    return pd.DataFrame({"entry_no": pd.Series(dtype=str), "submitted_at": pd.Series(dtype=str), "email": pd.Series(dtype=str),
+                         "store_name": pd.Series(dtype=str), "ean_code": pd.Series(dtype=str), "product_name": pd.Series(dtype=str),
+                         "stock": pd.Series(dtype=float), "tester": pd.Series(dtype=float), "total": pd.Series(dtype=float),
+                         "submitted_by": pd.Series(dtype=str), "_ts": pd.Series(dtype="datetime64[ns, UTC]")})
+
+
+def _parse_ts(series):
+    try: return pd.to_datetime(series, errors="coerce", utc=True, format="mixed")
+    except Exception: return pd.to_datetime(series, errors="coerce", utc=True)
+
+
+def _normalize_submissions(df):
+    """Accept local SQLite rows or Apps Script records (any header spelling) -> one clean schema."""
+    if df is None or len(df) == 0: return _empty_subs()
+    df = df.copy()
+    canon = {}
+    for c in df.columns:                      # exact canonical names win over aliases
+        n = re.sub(r"[^a-z0-9]+", "_", str(c).strip().lower()).strip("_")
+        if n in SUB_COLUMNS and n not in canon.values(): canon[c] = n
+    for c in df.columns:
+        if c in canon: continue
+        n = re.sub(r"[^a-z0-9]+", "_", str(c).strip().lower()).strip("_")
+        t = _SUB_ALIASES.get(n)
+        if t and t not in canon.values(): canon[c] = t
+    df = df[list(canon)].rename(columns=canon)
+    for c in SUB_COLUMNS:
+        if c not in df.columns: df[c] = 0.0 if c in ("stock", "tester", "total") else ""
+    for c in ("entry_no", "email", "store_name", "product_name", "submitted_by", "submitted_at"):
+        df[c] = df[c].fillna("").astype(str).str.strip()
+    df["email"] = df["email"].str.lower()
+    df["ean_code"] = norm_ean_series(df["ean_code"])
+    for c in ("stock", "tester", "total"):
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+    df["_ts"] = _parse_ts(df["submitted_at"])
+    return df[SUB_COLUMNS + ["_ts"]].reset_index(drop=True)
+
+
+def _fetch_submissions_raw():
+    if SUBMISSION_API_URL:
+        result = remote_request("GET") or {}
+        if not result.get("ok"):
+            raise RuntimeError(result.get("error") or "The submission service rejected the request.")
+        return pd.DataFrame(result.get("records", []) or [])
+    return load_local_submissions()
+
+
+def _refresh_submissions():
+    new = _normalize_submissions(_fetch_submissions_raw())
+    _subs.update(df=new, ts=time.time(), error="", gen=_subs["gen"] + 1)
+    return new
+
+
+def _recent_rows_df(known_entries):
+    now = time.time()
+    with _recent_lock:
+        _recent[:] = [r for r in _recent if now - r["_t"] < RECENT_TTL]
+        extra = [{k: v for k, v in r.items() if k != "_t"} for r in _recent if r["entry_no"] not in known_entries]
+    return _normalize_submissions(pd.DataFrame(extra)) if extra else None
+
+
+def get_submissions(force=False):
+    """Cached submissions (stale-while-revalidate). Raises only if nothing at all can be shown.
+
+    Rows this server accepted in the last 30 minutes are always merged in, so a user's own
+    entry is visible immediately even if the Google Sheet is slow or briefly unreachable.
+    """
+    df = _subs["df"]
+    if df is None or force:
+        with _subs_lock:
+            if _subs["df"] is None or (force and time.time() - _subs["ts"] > 2):
+                try: _refresh_submissions()
+                except Exception as e:
+                    log.exception("Could not load submissions")
+                    _subs["error"] = str(e)
+                    if _subs["df"] is None:
+                        extra = _recent_rows_df(set())
+                        if extra is not None: return extra
+                        raise
+        df = _subs["df"]
+    elif time.time() - _subs["ts"] >= SUBMISSIONS_TTL:
+        with _subs_lock:
+            start = not _subs["refreshing"]
+            if start: _subs["refreshing"] = True
+        if start:
+            def run():
+                try: _refresh_submissions()
+                except Exception as e:
+                    log.warning("Background submission refresh failed: %s", e)
+                    _subs["error"] = str(e); _subs["ts"] = time.time() - SUBMISSIONS_TTL + 10
+                finally: _subs["refreshing"] = False
+            threading.Thread(target=run, daemon=True, name="refresh-submissions").start()
+    extra = _recent_rows_df(set(df["entry_no"]) if len(df) else set())
+    return pd.concat([df, extra], ignore_index=True) if extra is not None else df
+
+
+def submissions_version():
+    return (_subs["gen"], len(_recent))
+
+
+def remember_submission(entry_no, email, store, rows, submitted_by=""):
+    """Call after a successful save: makes the entry visible at once and schedules a refresh."""
+    ts = datetime.now(timezone.utc).isoformat(); now = time.time()
+    recs = [{"entry_no": entry_no, "submitted_at": ts, "email": email, "store_name": store, "ean_code": r.get("EAN Code", ""),
+             "product_name": r.get("Product Name", ""), "stock": r.get("Stock", 0), "tester": r.get("Tester", 0),
+             "total": r.get("Total", 0), "submitted_by": submitted_by or email, "_t": now} for r in rows]
+    with _recent_lock:
+        _recent.extend(recs)
+        del _recent[:-5000]
+    _subs["ts"] = 0.0
+
+
+def entry_already_saved(entry_no):
+    """Duplicate-tap guard: a retry of the same entry number must not create a second copy."""
+    entry_no = str(entry_no or "").strip()
+    if not entry_no: return False
+    with _recent_lock:
+        if any(r["entry_no"] == entry_no for r in _recent): return True
+    df = _subs["df"]
+    return bool(df is not None and len(df) and (df["entry_no"] == entry_no).any())
+
+
 def load_submissions_live():
-    try:
-        if SUBMISSION_API_URL:
-            result = remote_request("GET") or {}
-            if not result.get("ok"): return pd.DataFrame()
-            return pd.DataFrame(result.get("records", []))
-        return load_local_submissions()
-    except Exception:
-        return pd.DataFrame()
+    """Used by Variance. Never raises: variance still works (without actuals) if submissions are down."""
+    try: return get_submissions()
+    except Exception: return _empty_subs()
+
 
 def merge_variance_actuals(var, stock):
     """Build the quantity-only variance dataset without pandas column collisions.
@@ -381,15 +658,11 @@ def merge_variance_actuals(var, stock):
     # Latest field submission: Store + EAN -> submitted Total Qty.
     subs = load_submissions_live()
     if subs is None or subs.empty:
-        subs = pd.DataFrame(columns=["store_name","ean_code","product_name","total","submitted_at"])
-    for c, default in [("store_name",""),("ean_code",""),("product_name",""),("total",0),("submitted_at","")]:
-        if c not in subs.columns:
-            subs[c] = default
+        subs = _empty_subs()
     subs = subs.copy()
-    subs["__key"] = (subs["store_name"].fillna("").astype(str).str.strip() + "|" +
-                      subs["ean_code"].fillna("").astype(str).str.strip())
-    subs["total"] = pd.to_numeric(subs["total"], errors="coerce").fillna(0)
-    subs = subs.sort_values("submitted_at", kind="stable").drop_duplicates("__key", keep="last")
+    subs["__key"] = subs["store_name"].astype(str).str.strip() + "|" + subs["ean_code"].astype(str).str.strip()
+    subs = subs[subs["total"] > 0]
+    subs = subs.sort_values(["_ts", "submitted_at"], kind="stable", na_position="first").drop_duplicates("__key", keep="last")
     sub_map = subs.set_index("__key")["total"] if not subs.empty else pd.Series(dtype=float)
 
     # map() cannot create duplicate columns, so Actual Closing Qty is guaranteed.
@@ -436,12 +709,17 @@ def merge_variance_actuals(var, stock):
     out = out.drop(columns=[c for c in ["__key", "Movement Check Qty", "Movement Check"] if c in out.columns], errors="ignore")
     return out
 
-def load_variance(force=False):
-    now=time.time(); url=VARIANCE_EXCEL_URL or EXCEL_URL
-    if force or _cache["var_df"] is None or now-_cache["var_ts"]>=CACHE_SECONDS:
-        df,src=read_sheet_from_workbook(url, VARIANCE_SHEET, "data.xlsx", force)
-        _cache.update(var_ts=now,var_df=clean_variance(df),var_source=src)
-    return _cache["var_df"].copy()
+def _build_variance():
+    url = VARIANCE_EXCEL_URL or EXCEL_URL
+    df, src = read_sheet_from_workbook(url, VARIANCE_SHEET, "data.xlsx", False)
+    out = clean_variance(df)
+    _cache["var_source"] = src
+    return out
+
+
+def load_variance(force=False, copy=True):
+    df = _swr("var", CACHE_SECONDS, _build_variance, force)
+    return df.copy() if copy else df
 
 
 def json_records(df):
@@ -455,32 +733,49 @@ def json_records(df):
     return out.to_dict(orient="records")
 
 
+_db_ready = False
+_db_lock = threading.Lock()
+
+
+def _db():
+    return sqlite3.connect(DATABASE_PATH, timeout=20)
+
+
 def db_init():
-    os.makedirs(os.path.dirname(DATABASE_PATH) or ".", exist_ok=True)
-    with sqlite3.connect(DATABASE_PATH) as con:
-        con.execute("""CREATE TABLE IF NOT EXISTS submissions(id INTEGER PRIMARY KEY AUTOINCREMENT, entry_no TEXT, submitted_at TEXT, email TEXT, store_name TEXT, ean_code TEXT, product_name TEXT, stock REAL, tester REAL, total REAL)""")
-        cols = [r[1] for r in con.execute("PRAGMA table_info(submissions)").fetchall()]
-        if "entry_no" not in cols:
-            con.execute("ALTER TABLE submissions ADD COLUMN entry_no TEXT DEFAULT '' ")
+    global _db_ready
+    if _db_ready and os.path.exists(DATABASE_PATH): return
+    with _db_lock:
+        os.makedirs(os.path.dirname(DATABASE_PATH) or ".", exist_ok=True)
+        with _db() as con:
+            try: con.execute("PRAGMA journal_mode=WAL")
+            except Exception: pass
+            con.execute("""CREATE TABLE IF NOT EXISTS submissions(id INTEGER PRIMARY KEY AUTOINCREMENT, entry_no TEXT, submitted_at TEXT, email TEXT, store_name TEXT, ean_code TEXT, product_name TEXT, stock REAL, tester REAL, total REAL)""")
+            cols = [r[1] for r in con.execute("PRAGMA table_info(submissions)").fetchall()]
+            if "entry_no" not in cols:
+                con.execute("ALTER TABLE submissions ADD COLUMN entry_no TEXT DEFAULT '' ")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_sub_store ON submissions(store_name)")
+        _db_ready = True
 
 
 def save_local_submission(payload):
     db_init(); ts=datetime.now(timezone.utc).isoformat(); rows=[]
     for r in payload["rows"]:
         rows.append((str(payload.get("entry_no", "")).strip(),ts,payload["email"],payload["store_name"],str(r.get("EAN Code","")),str(r.get("Product Name","")),float(r.get("Stock",0) or 0),float(r.get("Tester",0) or 0),float(r.get("Total",0) or 0)))
-    with sqlite3.connect(DATABASE_PATH) as con:
+    with _db() as con:
         con.executemany("INSERT INTO submissions(entry_no,submitted_at,email,store_name,ean_code,product_name,stock,tester,total) VALUES(?,?,?,?,?,?,?,?,?)",rows)
     return len(rows)
 
 
 def load_local_submissions():
     db_init()
-    with sqlite3.connect(DATABASE_PATH) as con: return pd.read_sql_query("SELECT * FROM submissions",con)
+    con = _db()
+    try: return pd.read_sql_query("SELECT * FROM submissions",con)
+    finally: con.close()
 
 
 def inward_db_init():
     db_init()
-    with sqlite3.connect(DATABASE_PATH) as con:
+    with _db() as con:
         con.execute("""CREATE TABLE IF NOT EXISTS inward_submissions(
             id INTEGER PRIMARY KEY AUTOINCREMENT, submitted_at TEXT, email TEXT,
             document_no TEXT, shop_name TEXT, transfer_to_code TEXT, ean TEXT,
@@ -497,7 +792,7 @@ def save_local_inward(email, po, rows):
                     float(r.get("Received Qty", 0) or 0), float(r.get("Variance Qty", 0) or 0),
                     None if r.get("Variance %") is None else float(r.get("Variance %")),
                     str(r.get("Status", "") or ""), json.dumps(r, ensure_ascii=False)))
-    with sqlite3.connect(DATABASE_PATH) as con:
+    with _db() as con:
         con.executemany("""INSERT INTO inward_submissions(
             submitted_at,email,document_no,shop_name,transfer_to_code,ean,description,quantity,
             received_qty,variance_qty,variance_pct,status,line_data_json)
@@ -532,11 +827,11 @@ def remote_request(method, payload=None):
     try:
         if SUBMISSION_API_SECRET:
             if method.upper()=="GET":
-                r=requests.get(SUBMISSION_API_URL,params={"secret":SUBMISSION_API_SECRET},timeout=30)
+                r=requests.get(SUBMISSION_API_URL,params={"secret":SUBMISSION_API_SECRET},timeout=(6,30))
             else:
-                payload={**payload,"secret":SUBMISSION_API_SECRET}; r=requests.request(method,SUBMISSION_API_URL,json=payload,timeout=30)
+                payload={**payload,"secret":SUBMISSION_API_SECRET}; r=requests.request(method,SUBMISSION_API_URL,json=payload,timeout=(8,40))
         else:
-            r=requests.request(method,SUBMISSION_API_URL,json=payload,timeout=30)
+            r=requests.request(method,SUBMISSION_API_URL,json=payload,timeout=(8,40))
         try: data=r.json()
         except ValueError: data={"ok":False,"error":(r.text or "Empty response from submission service.")[:500]}
         if r.status_code>=400:
@@ -936,6 +1231,9 @@ def _atomic_write_json(path, payload):
 
 
 def _github_publish(path, payload, message):
+    # "[skip render]" stops Render from redeploying on every admin edit. A redeploy restarts the
+    # server (cold caches, slow first page) and wipes the local SQLite file where submissions live.
+    if "[skip render]" not in message: message = message + " [skip render]"
     """Optional persistence: publish admin config changes to GitHub when configured.
     This keeps admin edits across Render redeploys without making GitHub mandatory.
     """
@@ -949,11 +1247,11 @@ def _github_publish(path, payload, message):
     headers = {"Authorization": f"Bearer {GITHUB_CONFIG_TOKEN}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
     content = _b64.b64encode(json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")).decode("ascii")
     try:
-        r = requests.get(api, params={"ref": GITHUB_CONFIG_BRANCH}, headers=headers, timeout=15)
+        r = requests.get(api, params={"ref": GITHUB_CONFIG_BRANCH}, headers=headers, timeout=(5, 12))
         sha = r.json().get("sha") if r.ok else None
         body = {"message": message, "content": content, "branch": GITHUB_CONFIG_BRANCH}
         if sha: body["sha"] = sha
-        put = requests.put(api, headers=headers, json=body, timeout=20)
+        put = requests.put(api, headers=headers, json=body, timeout=(5, 15))
         if put.status_code >= 400:
             try: detail = put.json().get("message", put.text)
             except Exception: detail = put.text
@@ -1039,30 +1337,34 @@ def _all_admin_users_safe():
     return rows
 
 
-def _submission_entry_groups():
+def _entry_key(df):
+    return df["entry_no"].where(df["entry_no"] != "", "LEGACY-" + df["submitted_at"])
+
+
+def _iso(ts, fallback=""):
+    return ts.isoformat() if pd.notna(ts) else str(fallback or "")
+
+
+def _submission_entry_groups(limit=250):
+    """Latest entries, one row per entry number. Returns (groups, error_message)."""
     try:
-        if SUBMISSION_API_URL:
-            result=remote_request("GET") or {}
-            if not result.get("ok"): return []
-            df=pd.DataFrame(result.get("records", []) or [])
-        else:
-            df=load_local_submissions()
-        if df.empty: return []
-        rename={"store":"store_name","Store Name":"store_name","Shop Name":"store_name","Email":"email","Email ID":"email","Submitted By":"email","Date":"submitted_at","Submitted At":"submitted_at","Timestamp":"submitted_at","Total":"total","Total Qty":"total","EAN":"ean_code","EAN Code":"ean_code","SKU":"ean_code"}
-        df=df.rename(columns={c:rename.get(c,c) for c in df.columns}).copy()
-        for c,d in [("entry_no",""),("submitted_at",""),("email",""),("store_name",""),("ean_code",""),("product_name",""),("stock",0),("tester",0),("total",0)]:
-            if c not in df.columns: df[c]=d
-        df["total"]=pd.to_numeric(df["total"],errors="coerce").fillna(0)
-        df=df[df["total"]>0].copy()
-        df["submitted_at"]=df["submitted_at"].fillna("").astype(str)
-        groups=[]
-        for key,z in df.groupby(df["entry_no"].astype(str).where(df["entry_no"].astype(str).str.strip()!="",df["submitted_at"].astype(str)), sort=False):
-            latest=z.iloc[0]
-            groups.append({"entry_no":str(key),"submitted_at":str(latest["submitted_at"]),"email":str(latest["email"]),"store_name":str(latest["store_name"]),"sku_count":int(len(z)),"total_qty":float(z["total"].sum())})
-        groups.sort(key=lambda x:x["submitted_at"], reverse=True)
-        return groups[:250]
-    except Exception:
-        return []
+        df = get_submissions()
+    except Exception as e:
+        return [], str(e)
+    err = _subs.get("error", "")
+    if df is None or df.empty: return [], err
+    df = df[df["total"] > 0]
+    if df.empty: return [], err
+    g = (df.assign(_k=_entry_key(df))
+           .groupby("_k", sort=False)
+           .agg(submitted_at=("submitted_at", "first"), ts_=("_ts", "max"), email=("email", "first"), store_name=("store_name", "first"),
+                sku_count=("ean_code", "count"), total_qty=("total", "sum"), submitted_by=("submitted_by", "first"))
+           .reset_index().rename(columns={"_k": "entry_no"}))
+    g = g.sort_values("ts_", ascending=False, na_position="last").head(limit)
+    out = [{"entry_no": r.entry_no, "submitted_at": _iso(r.ts_, r.submitted_at), "email": r.email, "store_name": r.store_name,
+            "sku_count": int(r.sku_count), "total_qty": float(r.total_qty), "submitted_by": r.submitted_by}
+           for r in g.itertuples(index=False)]
+    return out, err
 
 
 def _upload_token(payload, expires_hours=None):
@@ -1122,9 +1424,7 @@ def _header_auto(headers, candidates):
 
 
 def _normalize_ean(v):
-    s=str(v or "").strip()
-    if s.lower().endswith(".0") and s[:-2].isdigit(): s=s[:-2]
-    return s
+    return _norm_ean_value(v)
 
 
 def _admin_build_submission(file_storage, email, store, ean_header, stock_header, tester_header="", entry_no=""):
@@ -1144,9 +1444,9 @@ def _admin_build_submission(file_storage, email, store, ean_header, stock_header
     except Exception: master=pd.DataFrame(columns=MASTER_REQUIRED)
     try: stock=load_stock(False)
     except Exception: stock=pd.DataFrame(columns=["Store Name","EAN Code","Product Name"])
-    master_map={_normalize_ean(r["EAN Code"]):str(r["Product Name"]).strip() for _,r in master.iterrows() if "EAN Code" in r}
-    store_rows=stock[stock.get("Store Name",pd.Series(dtype=str)).astype(str).str.strip()==store] if not stock.empty and "Store Name" in stock else pd.DataFrame()
-    store_map={_normalize_ean(r["EAN Code"]):str(r["Product Name"]).strip() for _,r in store_rows.iterrows() if "EAN Code" in store_rows}
+    master_map=dict(zip(master["EAN Code"].map(_normalize_ean),master["Product Name"].astype(str).str.strip())) if not master.empty else {}
+    store_rows=stock[stock["Store Name"].astype(str).str.strip()==store] if not stock.empty and "Store Name" in stock else pd.DataFrame()
+    store_map=dict(zip(store_rows["EAN Code"].map(_normalize_ean),store_rows["Product Name"].astype(str).str.strip())) if not store_rows.empty else {}
     cleaned=[]; skipped=0
     for _,r in df.iterrows():
         ean=_normalize_ean(r.get(ean_header,""))
@@ -1184,6 +1484,7 @@ def _admin_build_submission(file_storage, email, store, ean_header, stock_header
         if saved!=len(cleaned): raise RuntimeError(f"Submission mismatch: sent {len(cleaned)} rows but service saved {saved}.")
     else:
         saved=save_local_submission(payload)
+    remember_submission(entry_no,email,store,cleaned,str(session.get("user_email") or "admin"))
     return {"entry_no":entry_no,"saved_rows":saved,"skipped_rows":skipped,"target_email":email,"store_name":store}
 
 def _admin_access_rows():
@@ -1268,7 +1569,15 @@ def admin_config():
     users=_all_admin_users_safe(); shops=_read_shop_directory(); mp=_admin_mapping_rows()
     assignments={}
     for r in mp: assignments.setdefault(r["email"],[]).append({"code":r["code"],"name":r["name"],"city":r["city"],"region":r["region"],"status":r["status"]})
-    return jsonify({"ok":True,"users":users,"shops":shops,"assignments":assignments,"submissions":_submission_entry_groups(),"persistence":{"github":bool(GITHUB_CONFIG_TOKEN and GITHUB_CONFIG_REPO),"database":DATABASE_PATH}})
+    # Submissions are loaded by a separate call (/api/admin/submissions) so this page never waits on Google Sheets.
+    return jsonify({"ok":True,"users":users,"shops":shops,"assignments":assignments,"persistence":{"github":bool(GITHUB_CONFIG_TOKEN and GITHUB_CONFIG_REPO),"database":DATABASE_PATH,"remote_submissions":bool(SUBMISSION_API_URL)}})
+
+
+@app.get("/api/admin/submissions")
+def admin_submissions():
+    if not _admin_required(): return jsonify({"ok":False,"error":"Admin access required."}),403
+    groups, err = _submission_entry_groups(250)
+    return jsonify({"ok":True,"submissions":groups,"warning":err if (err and not groups) else "","stale":bool(err and groups)})
 
 
 @app.post("/api/admin/user/save")
@@ -1367,7 +1676,7 @@ def admin_shop_save():
         shops=sorted(shops,key=lambda x:(x["name"].lower(),x["code"].lower()))
         pub=_save_admin_json(SHOPS_JSON_PATH,{"shops":shops},f"Admin save shop {z['name']}")
         # Propagate changed shop metadata to all mappings by original code/name.
-        mp=_mapping_payload(); mappings=mp.get("mappings",{})
+        mp=_mapping_payload(); mappings=mp.get("mappings",{}); before=json.dumps(mappings,sort_keys=True)
         for email,val in list(mappings.items()):
             raw=val.get("shops",[]) if isinstance(val,dict) else val
             out=[]
@@ -1377,7 +1686,8 @@ def admin_shop_save():
                 if (old_code and q["code"]==old_code) or (old_name and q["name"]==old_name) or (z["code"] and q["code"]==z["code"]): q=dict(z)
                 out.append(q)
             mappings[email]={"shops":out}
-        mp["mappings"]=mappings; _save_admin_json(MAPPING_JSON_PATH,mp,f"Propagate shop directory update {z['name']}")
+        mp["mappings"]=mappings
+        if json.dumps(mappings,sort_keys=True)!=before: _save_admin_json(MAPPING_JSON_PATH,mp,f"Propagate shop directory update {z['name']}")
         return jsonify({"ok":True,"message":"Shop saved.","shop":z,"published":pub.get("published",False)})
     except Exception as e:return jsonify({"ok":False,"error":str(e)}),500
 
@@ -1518,30 +1828,78 @@ def app_download(): return render_template("app_download.html")
 @require_access("stock_entry")
 def entry(): return render_template("entry.html", access=_access_destinations(), user_email=session.get("user_email", ""), is_admin=bool(session.get("is_admin")))
 
+_resp_cache = {}
+_resp_lock = threading.Lock()
+
+
+def _fail(e, status=500):
+    """Log the real problem; show users a readable message (deliberate config errors are kept verbatim)."""
+    log.exception("Request failed: %s %s", request.method, request.path)
+    msg = str(e) if isinstance(e, RuntimeError) else "The server could not complete this request. Please try again in a moment."
+    return jsonify({"ok": False, "error": msg}), status
+
+
+def _json_blob(name, version, build_payload):
+    """Serialise (and gzip) a big JSON payload once per data version instead of once per request."""
+    blob = _resp_cache.get(name)
+    if blob and blob["v"] == version: return blob
+    with _resp_lock:
+        blob = _resp_cache.get(name)
+        if blob and blob["v"] == version: return blob
+        raw = app.json.dumps(build_payload()).encode("utf-8")
+        blob = {"v": version, "raw": raw, "gz": gzip.compress(raw, compresslevel=5)}
+        _resp_cache[name] = blob
+        return blob
+
+
+def _blob_response(blob):
+    if "gzip" in request.headers.get("Accept-Encoding", ""):
+        r = Response(blob["gz"], mimetype="application/json"); r.headers["Content-Encoding"] = "gzip"
+    else:
+        r = Response(blob["raw"], mimetype="application/json")
+    r.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    r.headers["Pragma"] = "no-cache"
+    r.headers["Vary"] = "Accept-Encoding"
+    return r
+
+
+def _as_of(ts):
+    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat() if ts else ""
+
+
+@app.get("/healthz")
+def healthz():
+    return jsonify({"ok": True, "stock_loaded": _cache.get("stock_df") is not None, "ts": int(time.time())})
+
+
 @app.get("/api/data")
 @require_access("dashboard")
 def api_data():
     try:
-        stock=load_stock(request.args.get("refresh")=="1")
-        source_columns = list(stock.attrs.get("source_columns") or [c for c in stock.columns if c not in {"Forecast Months","Forecast Qty","NOD Bucket"}])
-        resp=jsonify({"ok":True,"source":_cache["stock_source"],"rows":len(stock),"columns":list(stock.columns),"source_columns":source_columns,"records":json_records(stock)})
-        resp.headers["Cache-Control"]="no-store, no-cache, must-revalidate, max-age=0"
-        resp.headers["Pragma"]="no-cache"
-        return resp
-    except Exception as e: return jsonify({"ok":False,"error":str(e)}),500
+        force = request.args.get("refresh") == "1"
+        stock = load_stock(force, copy=False)
+        version = stock.attrs.get("_gen", 0)
+        def build():
+            source_columns = list(stock.attrs.get("source_columns") or [c for c in stock.columns if c not in {"Forecast Months","Forecast Qty","NOD Bucket"}])
+            return {"ok": True, "source": _cache["stock_source"], "as_of": _as_of(_cache.get("stock_ts")), "rows": len(stock), "columns": list(stock.columns),
+                    "source_columns": source_columns, "records": json_records(stock)}
+        return _blob_response(_json_blob("data", version, build))
+    except Exception as e: return _fail(e)
 
 @app.get("/api/variance")
 @require_access("dashboard")
 def api_variance():
     try:
-        var=load_variance(request.args.get("refresh")=="1")
-        stock=load_stock(request.args.get("refresh")=="1")
-        merged=merge_variance_actuals(var,stock)
-        resp=jsonify({"ok":True,"source":_cache["var_source"],"rows":len(merged),"columns":list(merged.columns),"records":json_records(merged)})
-        resp.headers["Cache-Control"]="no-store, no-cache, must-revalidate, max-age=0"
-        resp.headers["Pragma"]="no-cache"
-        return resp
-    except Exception as e: return jsonify({"ok":False,"error":str(e)}),500
+        force = request.args.get("refresh") == "1"
+        var = load_variance(force, copy=False)
+        stock = load_stock(force, copy=False)
+        load_submissions_live()                     # refreshes the submission cache if it is stale
+        version = (var.attrs.get("_gen", 0), stock.attrs.get("_gen", 0), submissions_version())
+        def build():
+            merged = merge_variance_actuals(var, stock)
+            return {"ok": True, "source": _cache["var_source"], "as_of": _as_of(_cache.get("var_ts")), "rows": len(merged), "columns": list(merged.columns), "records": json_records(merged)}
+        return _blob_response(_json_blob("variance", version, build))
+    except Exception as e: return _fail(e)
 
 @app.post("/api/data/sync")
 @require_access("stock_entry")
@@ -1555,8 +1913,10 @@ def data_sync():
         mp = load_mapping(True)
         if email and email not in set(mp["Email ID"].astype(str).str.lower()):
             return jsonify({"ok": False, "error": "Email ID is not mapped to any shop."}), 403
-        stock = load_stock(True)
+        stock = load_stock(True, copy=False)
         master = load_master(True)
+        try: get_submissions(True)
+        except Exception: pass
         inward_rows = None
         inward_error = ""
         try:
@@ -1590,7 +1950,7 @@ def entry_meta():
         master_skus=[]
         if store:
             # Only after the user selects a shop do we load the heavier Excel sources.
-            stock=load_stock(False)
+            stock=load_stock(False, copy=False)
             master=load_master(False)
             store_stock=stock[stock["Store Name"].astype(str).str.strip()==store].copy()
             store_stock["Stock"]=pd.to_numeric(store_stock.get("Stock",0),errors="coerce").fillna(0)
@@ -1601,33 +1961,54 @@ def entry_meta():
     except Exception as e:
         return jsonify({"ok":False,"error":str(e)}),500
 
+def _num(v, default=0.0):
+    """Quantity parser: '12', 12.0, '' -> number; garbage / NaN / inf -> ValueError (HTTP 400, not 500)."""
+    if v is None or (isinstance(v, str) and not v.strip()): return default
+    x = float(str(v).replace(",", "").strip()) if isinstance(v, str) else float(v)
+    if x != x or x in (float("inf"), float("-inf")): raise ValueError("Quantity must be a finite number.")
+    return x
+
+
+MAX_SUBMIT_ROWS = int(os.getenv("MAX_SUBMIT_ROWS", "5000"))
+
+
 @app.post("/api/submit")
 @require_access("stock_entry")
 def submit():
     try:
-        payload=request.get_json(force=True); email=str(payload.get("email","")).strip().lower(); store=str(payload.get("store_name","")).strip(); rows=payload.get("rows",[])
+        payload=request.get_json(silent=True) or {}; email=str(payload.get("email","")).strip().lower(); store=str(payload.get("store_name","")).strip(); rows=payload.get("rows",[])
         if not _enforce_identity(email): return jsonify({"ok":False,"error":"The submitted email does not match the signed-in account."}),403
-        if not email or not store or not rows: return jsonify({"ok":False,"error":"Email, shop and at least one SKU are required."}),400
+        if not email or not store or not isinstance(rows,list) or not rows: return jsonify({"ok":False,"error":"Email, shop and at least one SKU are required."}),400
+        if len(rows)>MAX_SUBMIT_ROWS: return jsonify({"ok":False,"error":f"Too many rows (maximum {MAX_SUBMIT_ROWS})."}),400
         mp,master=load_entry_sources(False)
         allowed=set(mp.loc[mp["Email ID"]==email,"Store Name"])
-        if store not in allowed: return jsonify({"ok":False,"error":"This email is not mapped to the selected shop."}),403
-        stock=load_stock(False)
-        master_map={str(x["EAN Code"]).strip():str(x["Product Name"]) for _,x in master.iterrows()}
+        if store not in allowed and not session.get("is_admin"): return jsonify({"ok":False,"error":"This email is not mapped to the selected shop."}),403
+        stock=load_stock(False, copy=False)
+        master_map=dict(zip(master["EAN Code"],master["Product Name"].astype(str))) if not master.empty else {}
         # Current-store SKUs are valid even if the master file is temporarily missing one.
-        store_rows=stock[stock["Store Name"].astype(str).str.strip()==store][["EAN Code","Product Name"]].drop_duplicates()
-        store_map={str(x["EAN Code"]).strip():str(x["Product Name"]) for _,x in store_rows.iterrows()}
-        cleaned=[]
+        store_rows=stock.loc[stock["Store Name"].astype(str).str.strip()==store,["EAN Code","Product Name"]].drop_duplicates("EAN Code")
+        store_map=dict(zip(store_rows["EAN Code"],store_rows["Product Name"].astype(str)))
+        agg={}
         for r in rows:
-            ean=str(r.get("EAN Code","" )).strip()
+            if not isinstance(r,dict): continue
+            ean=_norm_ean_value(r.get("EAN Code",""))
             if not ean: continue
             product_name=master_map.get(ean) or store_map.get(ean) or str(r.get("Product Name","" )).strip()
             if not product_name: continue
-            stock_qty=max(0.0,float(r.get("Stock",0) or 0))
-            tester_qty=max(0.0,float(r.get("Tester",0) or 0))
-            cleaned.append({"EAN Code":ean,"Product Name":product_name,"Stock":stock_qty,"Tester":tester_qty,"Total":stock_qty+tester_qty})
-        cleaned=[r for r in cleaned if float(r.get("Total",0) or 0) > 0]
+            try:
+                stock_qty=max(0.0,_num(r.get("Stock",0))); tester_qty=max(0.0,_num(r.get("Tester",0)))
+            except (ValueError, TypeError):
+                return jsonify({"ok":False,"error":f"Invalid quantity for EAN {ean}. Use numbers only."}),400
+            if ean in agg:                                   # same SKU twice in one entry: add, never lose stock
+                agg[ean]["Stock"]+=stock_qty; agg[ean]["Tester"]+=tester_qty; agg[ean]["Total"]+=stock_qty+tester_qty
+            else:
+                agg[ean]={"EAN Code":ean,"Product Name":product_name,"Stock":stock_qty,"Tester":tester_qty,"Total":stock_qty+tester_qty}
+        cleaned=[r for r in agg.values() if r["Total"]>0]
         if not cleaned: return jsonify({"ok":False,"error":"Please enter quantity for at least one SKU."}),400
         entry_no=str(payload.get("entry_no", "")).strip() or ("STK-" + datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(2).upper())
+        if entry_already_saved(entry_no):
+            # The browser retried (slow network / double tap). The first copy is already stored.
+            return jsonify({"ok":True,"message":"Stock was already submitted.","saved_rows":len(cleaned),"entry_no":entry_no,"duplicate":True})
         payload={"entry_no":entry_no,"email":email,"store_name":store,"rows":cleaned}
         if SUBMISSION_API_URL:
             result=remote_request("POST",payload) or {}
@@ -1636,17 +2017,19 @@ def submit():
             saved=int(result.get("saved_rows",len(cleaned)) or 0)
             if saved != len(cleaned):
                 return jsonify({"ok":False,"error":f"Submission mismatch: sent {len(cleaned)} rows but Apps Script saved {saved}.","remote":result}),502
+            remember_submission(entry_no,email,store,cleaned)
             return jsonify({"ok":True,"message":"Stock submitted successfully.","saved_rows":saved,"entry_no":entry_no,"remote":result})
         saved=save_local_submission(payload)
+        remember_submission(entry_no,email,store,cleaned)
         return jsonify({"ok":True,"message":"Stock submitted successfully.","saved_rows":saved,"entry_no":entry_no})
-    except Exception as e: return jsonify({"ok":False,"error":str(e)}),500
+    except Exception as e: return _fail(e)
 
 @app.post("/api/entry-report-data")
 @require_access("stock_entry")
 def entry_report_data():
     """Return the quantity-only data needed to build the two post-submission PDFs."""
     try:
-        payload=request.get_json(force=True) or {}
+        payload=request.get_json(silent=True) or {}
         email=str(payload.get("email","")).strip().lower()
         if not _enforce_identity(email): return jsonify({"ok":False,"error":"The submitted email does not match the signed-in account."}),403
         store=str(payload.get("store_name","")).strip()
@@ -1656,30 +2039,38 @@ def entry_report_data():
 
         mp,_=load_entry_sources(False)
         allowed=set(mp.loc[mp["Email ID"]==email,"Store Name"])
-        if store not in allowed:
+        if store not in allowed and not session.get("is_admin"):
             return jsonify({"ok":False,"error":"This email is not mapped to the selected shop."}),403
 
-        stock=load_stock(False)
-        var=load_variance(False)
+        stock=load_stock(False, copy=False)
+        try: var=load_variance(False, copy=False)
+        except Exception:
+            log.exception("Variance data unavailable for the report; continuing without movement columns")
+            var=pd.DataFrame(columns=["Store Name","EAN Code","Product Name"])
 
-        # Submitted physical quantities keyed by Store + EAN.
+        # Submitted physical quantities keyed by EAN.
         submitted={}
         for r in rows:
-            ean=str(r.get("EAN Code","")).strip()
+            ean=_norm_ean_value(r.get("EAN Code",""))
             if not ean: continue
-            physical=max(0.0,float(r.get("Total",0) or 0))
+            try:
+                physical=max(0.0,_num(r.get("Total",0))); stock_q=max(0.0,_num(r.get("Stock",0))); tester_q=max(0.0,_num(r.get("Tester",0)))
+            except (ValueError, TypeError):
+                return jsonify({"ok":False,"error":"Invalid quantity in report rows."}),400
             name=str(r.get("Product Name","")).strip()
-            submitted[ean]={"Product Name":name,"Physical Stock":physical,"Stock Qty":max(0.0,float(r.get("Stock",0) or 0)),"Tester Qty":max(0.0,float(r.get("Tester",0) or 0))}
+            if ean in submitted:
+                submitted[ean]["Physical Stock"]+=physical; submitted[ean]["Stock Qty"]+=stock_q; submitted[ean]["Tester Qty"]+=tester_q
+            else:
+                submitted[ean]={"Product Name":name,"Physical Stock":physical,"Stock Qty":stock_q,"Tester Qty":tester_q}
 
-        st=stock[stock["Store Name"].astype(str).str.strip()==store].copy()
-        st["EAN Code"]=st["EAN Code"].astype(str).str.strip()
-        st=st.drop_duplicates("EAN Code",keep="last")
+        st=stock[stock["Store Name"].astype(str).str.strip()==store].drop_duplicates("EAN Code",keep="last")
         st_map=st.set_index("EAN Code").to_dict("index")
 
-        vv=var[var["Store Name"].astype(str).str.strip()==store].copy()
-        vv["EAN Code"]=vv["EAN Code"].astype(str).str.strip()
-        vv=vv.drop_duplicates("EAN Code",keep="last")
-        var_map=vv.set_index("EAN Code").to_dict("index")
+        if len(var) and "Store Name" in var:
+            vv=var[var["Store Name"].astype(str).str.strip()==store].drop_duplicates("EAN Code",keep="last")
+        else:
+            vv=var
+        var_map=vv.set_index("EAN Code").to_dict("index") if len(vv) else {}
 
         # Use the submitted rows as the authoritative SKU list so every SKU the
         # store entered appears in both PDFs.
@@ -1710,7 +2101,7 @@ def entry_report_data():
 
         return jsonify({"ok":True,"store":store,"email":email,"rows":report})
     except Exception as e:
-        return jsonify({"ok":False,"error":str(e)}),500
+        return _fail(e)
 
 # ======================================================================
 # Inward Validation - Invoice/Document based, line-level validation
@@ -1831,7 +2222,7 @@ def normalize_sheet_url(url):
 
 def _download_inward(url):
     try:
-        r = requests.get(normalize_sheet_url(url), timeout=60, allow_redirects=True, headers={"User-Agent": "Mozilla/5.0"})
+        r = requests.get(normalize_sheet_url(url), timeout=(8, 60), allow_redirects=True, headers={"User-Agent": "Mozilla/5.0"})
         r.raise_for_status()
     except requests.RequestException as e:
         raise RuntimeError(f"Could not download the inward sheet: {e}")
@@ -1893,7 +2284,7 @@ def _parse_inward(data, kind):
 
         out["__Document Key"] = out["Document No."].map(_po_key)
         out["__Row"] = range(len(out))
-        out["__Key"] = out.apply(lambda r: f"{r['__Document Key']}|{r['EAN']}|{r['__Row']}", axis=1)
+        out["__Key"] = out["__Document Key"] + "|" + out["EAN"] + "|" + out["__Row"].astype(str)
         out = out[(out["__Document Key"] != "") & ((out["EAN"] != "") | (out["Description"] != ""))]
         if out.empty:
             continue
@@ -1903,10 +2294,21 @@ def _parse_inward(data, kind):
     raise RuntimeError("Could not find the required inward columns. Required: Document No./InvoiceNumber and Quantity/Sales Qty. First row seen -> " + (" | ".join(seen) or "sheet is empty"))
 
 
+_inward_lock = threading.Lock()
+
+
 def load_inward(force=False):
     key = INWARD_EXCEL_URL or "local"
-    if not force and _inward_cache["df"] is not None and _inward_cache["key"] == key and time.time() - _inward_cache["ts"] < INWARD_CACHE_SECONDS:
+    def fresh(): return _inward_cache["df"] is not None and _inward_cache["key"] == key and time.time() - _inward_cache["ts"] < INWARD_CACHE_SECONDS
+    if not force and fresh():
         return _inward_cache["df"], _inward_cache["source"]
+    with _inward_lock:
+        if fresh() and (not force or time.time() - _inward_cache["ts"] < 5):
+            return _inward_cache["df"], _inward_cache["source"]
+        return _load_inward_uncached(key)
+
+
+def _load_inward_uncached(key):
     if INWARD_EXCEL_URL:
         data, kind = _download_inward(INWARD_EXCEL_URL)
     else:
@@ -2093,60 +2495,46 @@ def inward_submit():
         return jsonify({"ok": True, "po": label, "mode": mode, "labels": _inward_labels(mode), "headers": INWARD_OUTPUT_HEADERS, "saved_rows": saved, "rows": rows, "submitted_at": datetime.now(timezone.utc).isoformat()})
     except Exception as e: return jsonify({"ok": False, "error": str(e)}), 500
 
+def _mapped_stores_for(email):
+    mp = load_mapping(False)
+    return set(mp.loc[mp["Email ID"].astype(str).str.strip().str.lower() == email, "Store Name"].astype(str).str.strip())
+
+
 @app.get("/api/submissions")
 @require_access("stock_entry")
 def submissions():
-    """Return submission history safely. Regular users see only their own entries for mapped shops."""
+    """Submission history for the Entry page.
+
+    Field users see entries for the shops mapped to them (so a colleague's or an admin's upload for
+    the same shop is visible too); set HISTORY_SCOPE=own to restrict to entries under their own email.
+    Only the latest HISTORY_MAX_ENTRIES entries are sent, newest first, with ISO timestamps.
+    """
     try:
         is_admin = bool(session.get("is_admin"))
         email = str(session.get("user_email", "")).strip().lower()
-
-        if not is_admin and not email:
+        if not email:
             return jsonify({"ok": False, "error": "Authentication required."}), 401
-
-        if SUBMISSION_API_URL:
-            result = remote_request("GET") or {}
-            if not result.get("ok"):
-                return jsonify({"ok": False, "error": result.get("error", "Submission service rejected the request.")}), 502
-            records = result.get("records", []) or []
-            df = pd.DataFrame(records)
-        else:
-            df = load_local_submissions()
-
-        if df is None or df.empty:
-            return jsonify({"ok": True, "records": []})
-
-        rename = {
-            "store": "store_name", "Store Name": "store_name", "Shop Name": "store_name",
-            "Email": "email", "Email ID": "email", "Submitted By": "email",
-            "Date": "submitted_at", "Submitted At": "submitted_at", "timestamp": "submitted_at",
-            "Timestamp": "submitted_at", "Total Qty": "total", "Total": "total",
-            "SKU": "ean_code", "EAN": "ean_code", "EAN Code": "ean_code",
-        }
-        df = df.rename(columns={c: rename.get(c, c) for c in df.columns}).copy()
-        for c, default in [("store_name", ""), ("email", ""), ("submitted_at", ""), ("entry_no", ""), ("total", 0)]:
-            if c not in df.columns:
-                df[c] = default
-
-        df["store_name"] = df["store_name"].fillna("").astype(str).str.strip()
-        df["email"] = df["email"].fillna("").astype(str).str.strip().str.lower()
-        df["total"] = pd.to_numeric(df["total"], errors="coerce").fillna(0)
-        df = df[df["total"] > 0].copy()
-
+        try:
+            df = get_submissions()
+        except Exception as e:
+            log.exception("Submission history load failed")
+            return jsonify({"ok": False, "error": f"Could not reach the submission service ({e}). Your saved entries are safe; please retry in a moment."}), 502
+        df = df[df["total"] > 0]
         if not is_admin:
-            mp = load_mapping(False)
-            mapped = set(mp.loc[mp["Email ID"].astype(str).str.strip().str.lower() == email, "Store Name"].astype(str).str.strip())
-            if not mapped:
-                return jsonify({"ok": True, "records": []})
-            df = df[(df["email"] == email) & (df["store_name"].isin(mapped))].copy()
-
+            mapped = _mapped_stores_for(email)
+            own = df["email"] == email
+            if HISTORY_SCOPE == "own": df = df[own]
+            else: df = df[df["store_name"].isin(mapped) | own]
         if df.empty:
-            return jsonify({"ok": True, "records": []})
-
-        return jsonify({"ok": True, "records": json_records(df)})
+            return jsonify({"ok": True, "records": [], "warning": _subs.get("error", "")})
+        df = df.assign(_k=_entry_key(df))
+        latest = df.groupby("_k")["_ts"].max().sort_values(ascending=False, na_position="last").head(HISTORY_MAX_ENTRIES).index
+        df = df[df["_k"].isin(latest)].copy()
+        df["submitted_at"] = [_iso(t, a) for t, a in zip(df["_ts"], df["submitted_at"])]
+        out = df[["entry_no", "submitted_at", "email", "store_name", "ean_code", "product_name", "stock", "tester", "total"]]
+        return jsonify({"ok": True, "records": json_records(out), "warning": _subs.get("error", "")})
     except Exception as e:
-        app.logger.exception("Submission history load failed")
-        return jsonify({"ok": False, "error": f"Could not load submissions: {e}"}), 500
+        return _fail(e)
 
 
 @app.get("/api/last-submissions")
@@ -2159,62 +2547,32 @@ def last_submissions():
             return jsonify({"ok": False, "error": "The requested email does not match the signed-in account."}), 403
         if not email:
             return jsonify({"ok": False, "error": "Email ID is required."}), 400
-        mp, _ = load_entry_sources(False)
-        mapped = sorted(mp.loc[mp["Email ID"].astype(str).str.strip().str.lower() == email, "Store Name"].dropna().astype(str).str.strip().unique().tolist())
+        mapped = sorted(_mapped_stores_for(email))
         if not mapped:
             return jsonify({"ok": True, "records": []})
-
-        df = load_submissions_live()
-        if df is None or df.empty:
-            return jsonify({"ok": True, "records": []})
-
-        # Normalize both local SQLite and remote Apps Script field names.
-        rename = {
-            "store": "store_name", "Store Name": "store_name", "Shop Name": "store_name",
-            "Email": "email", "Email ID": "email", "Submitted By": "email",
-            "Date": "submitted_at", "Submitted At": "submitted_at", "timestamp": "submitted_at",
-            "Timestamp": "submitted_at", "Total Qty": "total", "Total": "total",
-            "SKU": "ean_code", "EAN": "ean_code", "EAN Code": "ean_code",
-        }
-        df = df.rename(columns={c: rename.get(c, c) for c in df.columns}).copy()
-        for c, default in [("store_name", ""), ("email", ""), ("submitted_at", ""), ("total", 0)]:
-            if c not in df.columns: df[c] = default
-        df["store_name"] = df["store_name"].fillna("").astype(str).str.strip()
-        df["email"] = df["email"].fillna("").astype(str).str.strip().str.lower()
-        df["total"] = pd.to_numeric(df["total"], errors="coerce").fillna(0)
-        # A user should see submissions for their mapped shops. If a remote service
-        # stores the submitting email differently, the shop mapping remains the gate.
-        df = df[df["store_name"].isin(mapped)].copy()
-        if df.empty:
-            return jsonify({"ok": True, "records": []})
-        df["_ts"] = pd.to_datetime(df["submitted_at"], errors="coerce", utc=True)
+        try: df = get_submissions()
+        except Exception as e:
+            return jsonify({"ok": False, "error": f"Could not reach the submission service ({e})."}), 502
+        df = df[(df["total"] > 0) & df["store_name"].isin(mapped)]
         out = []
         for store in mapped:
-            z = df[df["store_name"] == store].copy()
+            z = df[df["store_name"] == store]
             if z.empty: continue
-            latest = z["_ts"].max()
-            if pd.isna(latest):
-                latest_rows = z.tail(1)
-                latest_text = str(latest_rows.iloc[0].get("submitted_at", ""))
-            else:
-                latest_rows = z[z["_ts"] == latest]
-                latest_text = latest.isoformat()
-            out.append({
-                "store_name": store,
-                "submitted_at": latest_text,
-                "email": str(latest_rows["email"].iloc[-1] if "email" in latest_rows else ""),
-                "total_qty": float(latest_rows["total"].sum()),
-                "sku_count": int(len(latest_rows)),
-            })
+            z = z.assign(_k=_entry_key(z))
+            last_key = z.sort_values("_ts", na_position="first").iloc[-1]["_k"]
+            rows = z[z["_k"] == last_key]
+            first = rows.iloc[0]
+            out.append({"store_name": store, "submitted_at": _iso(rows["_ts"].max(), first["submitted_at"]), "email": str(first["email"]),
+                        "total_qty": float(rows["total"].sum()), "sku_count": int(len(rows)), "entry_no": str(first["entry_no"])})
         return jsonify({"ok": True, "records": out})
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _fail(e)
 
 @app.get("/api/export")
 @require_access("dashboard")
 def export():
     try:
-        stock=load_stock(False)
+        stock=load_stock(False, copy=False)
         for col in ["Type","Store Name","Pareto","Product Name","EAN Code"]:
             vals=request.args.getlist(col)
             if vals: stock=stock[stock[col].isin(vals)]
@@ -2225,7 +2583,7 @@ def export():
 @require_access("dashboard")
 def variance_export():
     try:
-        df=merge_variance_actuals(load_variance(False), load_stock(False))
+        df=merge_variance_actuals(load_variance(False, copy=False), load_stock(False, copy=False))
         if request.args.get("store"): df=df[df["Store Name"]==request.args.get("store")]
         if request.args.get("sku"):
             q=request.args.get("sku").lower(); df=df[df["EAN Code"].str.lower().str.contains(q,na=False) | df["Product Name"].str.lower().str.contains(q,na=False)]
@@ -2233,3 +2591,17 @@ def variance_export():
             df=df[(df["Stock Variance Qty"].abs()>0) | (df["Live Submission"] & (df["Difference Qty"].abs()>0))]
         return Response(df.to_csv(index=False),mimetype="text/csv",headers={"Content-Disposition":"attachment; filename=variance_analysis.csv"})
     except Exception as e: return jsonify({"ok":False,"error":str(e)}),500
+
+
+# -----------------------------------------------------------------------------
+# Warm the caches at start-up so the first person to open the app does not wait for the Excel download.
+# -----------------------------------------------------------------------------
+def _warmup():
+    time.sleep(0.5)
+    for name, fn in (("stock", load_stock), ("master", load_master), ("variance", load_variance), ("submissions", lambda: get_submissions())):
+        try: fn()
+        except Exception as e: log.warning("Warm-up of %s skipped: %s", name, e)
+
+
+if os.getenv("WARMUP", "1").strip().lower() not in {"0", "false", "no"} and not os.getenv("PYTEST_CURRENT_TEST"):
+    threading.Thread(target=_warmup, daemon=True, name="warmup").start()
