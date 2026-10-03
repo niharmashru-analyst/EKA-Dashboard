@@ -70,6 +70,17 @@ function doPost(e){
     const mode=String(body.submission_mode||'field_entry').trim();
     const rows=(body.rows||[]).filter(function(r){return Number(r.Total||0)>0;});
     if(!email||!store||!rows.length)return json_({ok:false,error:'Missing submission data'});
+
+    // Idempotency: a mobile device may retry after a timeout even though the
+    // first request already reached Google Sheets. Never append the same entry twice.
+    const lastRow=sh.getLastRow();
+    if(lastRow>1){
+      const existing=sh.getRange(2,1,lastRow-1,1).getDisplayValues().flat().map(String);
+      if(existing.indexOf(entryNo)!==-1){
+        const matched=existing.filter(function(x){return x===entryNo;}).length;
+        return json_({ok:true,saved_rows:matched||rows.length,entry_no:entryNo,duplicate:true,submission_mode:mode});
+      }
+    }
     const out=rows.map(function(r){const stock=Number(r.Stock||0);const tester=Number(r.Tester||0);return [entryNo,now,email,store,String(r['EAN Code']||''),String(r['Product Name']||''),stock,tester,stock+tester,submittedBy,mode];});
     sh.getRange(sh.getLastRow()+1,1,out.length,HEADERS.length).setValues(out);SpreadsheetApp.flush();
     return json_({ok:true,saved_rows:out.length,entry_no:entryNo,submission_mode:mode});
