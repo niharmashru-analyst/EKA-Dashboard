@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import requests
 import pandas as pd
 import re
-from flask import Flask, jsonify, render_template, request, Response, session, redirect, send_file
+from flask import Flask, jsonify, render_template, request, Response, session, redirect, send_file, make_response
 
 app = Flask(__name__)
 log = logging.getLogger("cormate")
@@ -34,6 +34,9 @@ GITHUB_USERS_PATH = os.getenv("GITHUB_USERS_PATH", "data/users.json").strip()
 GITHUB_MAPPING_PATH = os.getenv("GITHUB_MAPPING_PATH", "data/mapping.json").strip()
 GITHUB_SHOPS_PATH = os.getenv("GITHUB_SHOPS_PATH", "data/shops.json").strip()
 UPLOAD_LINK_HOURS = int(os.getenv("UPLOAD_LINK_HOURS", "48"))
+# Optional public URL used for shareable manual-upload links.
+# Example on Render: https://your-app.onrender.com
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
 
 @app.context_processor
 def _asset_helpers():
@@ -1428,31 +1431,15 @@ def _normalize_ean(v):
 
 
 def _remote_file_payload(file_storage):
-    """Read the original upload once and package it for Apps Script/Drive."""
+    """Return the original uploaded file as a compact base64 payload for the Apps Script backend."""
     if not file_storage or not getattr(file_storage, "filename", ""):
         return None
     raw = file_storage.read()
     if not raw:
         raise RuntimeError("The uploaded file is empty.")
-
-    max_bytes = int(ADMIN_UPLOAD_MAX_MB * 1024 * 1024)
-    if len(raw) > max_bytes:
-        raise RuntimeError(
-            f"File is too large. Maximum allowed upload size is {ADMIN_UPLOAD_MAX_MB} MB."
-        )
-
     name = str(file_storage.filename).strip()
-    ext = os.path.splitext(name)[1].lower()
-    allowed = {".xlsx", ".xlsm", ".csv", ".pdf"}
-    if ext not in allowed:
-        raise RuntimeError("Upload .xlsx, .xlsm, .csv or .pdf only.")
-
-    mime = str(file_storage.mimetype or "application/octet-stream").strip()
-    return {
-        "file_name": name,
-        "mime_type": mime,
-        "base64": base64.b64encode(raw).decode("ascii")
-    }
+    mime = str(file_storage.mimetype or "application/octet-stream")
+    return {"file_name": name, "mime_type": mime, "base64": base64.b64encode(raw).decode("ascii")}
 
 
 def _admin_build_submission(file_storage, email, store, ean_header, stock_header, tester_header="", entry_no=""):
@@ -1518,17 +1505,7 @@ def _admin_build_submission(file_storage, email, store, ean_header, stock_header
     else:
         saved=save_local_submission(payload)
     remember_submission(entry_no,email,store,cleaned,str(session.get("user_email") or "admin"))
-    return {
-        "entry_no":entry_no,
-        "saved_rows":saved,
-        "skipped_rows":skipped,
-        "target_email":email,
-        "store_name":store,
-        "drive_file_url": (result.get("drive_file_url","") if SUBMISSION_API_URL else ""),
-        "drive_file_id": (result.get("drive_file_id","") if SUBMISSION_API_URL else ""),
-        "file_name": (result.get("file_name","") if SUBMISSION_API_URL else ""),
-        "file_type": (result.get("file_type","") if SUBMISSION_API_URL else ""),
-    }
+    return {"entry_no":entry_no,"saved_rows":saved,"skipped_rows":skipped,"target_email":email,"store_name":store}
 
 def _admin_access_rows():
     users = _load_users_config().get("users", {})
@@ -1773,73 +1750,11 @@ def admin_upload_preview():
 
 @app.post("/api/admin/upload-submit")
 def admin_upload_submit():
-    if not _admin_required():
-        return jsonify({"ok":False,"error":"Admin access required."}),403
+    if not _admin_required(): return jsonify({"ok":False,"error":"Admin access required."}),403
     try:
-        p=request.form
-        file_storage=request.files.get("file")
-        if not file_storage or not file_storage.filename:
-            raise RuntimeError("Choose a file first.")
-
-        email=p.get("email")
-        store=p.get("store")
-        entry_no=p.get("entry_no")
-
-        # PDFs are file-only uploads; no SKU/quantity mapping is required.
-        if str(file_storage.filename).lower().endswith(".pdf"):
-            original_file=_remote_file_payload(file_storage)
-            payload={
-                "entry_no":str(entry_no or "").strip() or (
-                    "PDF-"+datetime.now().strftime("%Y%m%d-%H%M%S")+"-"+secrets.token_hex(2).upper()
-                ),
-                "email":str(email or "").strip().lower(),
-                "store_name":str(store or "").strip(),
-                "rows":[],
-                "submitted_by":str(session.get("user_email") or "admin"),
-                "submission_mode":"admin_pdf_upload",
-                "file":original_file,
-            }
-            # Validate target user/store exactly as the normal admin upload path.
-            rec=_user_record(payload["email"])
-            if not rec:
-                raise RuntimeError("Target user does not exist.")
-            if str(rec.get("status","Active")).strip().lower() not in {"active","enabled"}:
-                raise RuntimeError("Target user is inactive.")
-            mp=load_mapping(True)
-            allowed=set(mp.loc[
-                mp["Email ID"].astype(str).str.lower()==payload["email"],
-                "Store Name"
-            ].astype(str).str.strip())
-            if payload["store_name"] not in allowed:
-                raise RuntimeError("The selected store is not assigned to the target user.")
-
-            if not SUBMISSION_API_URL:
-                raise RuntimeError("PDF uploads require the Google Apps Script submission service to be configured.")
-            result=remote_request("POST",payload) or {}
-            if not result.get("ok"):
-                raise RuntimeError(result.get("error","Submission service rejected the PDF upload."))
-
-            return jsonify({
-                "ok":True,
-                "message":"PDF uploaded and stored in Google Drive.",
-                "entry_no":payload["entry_no"],
-                "saved_rows":0,
-                "target_email":payload["email"],
-                "store_name":payload["store_name"],
-                "drive_file_url":result.get("drive_file_url",""),
-                "drive_file_id":result.get("drive_file_id",""),
-                "file_name":result.get("file_name",""),
-                "file_type":result.get("file_type","PDF"),
-            })
-
-        result=_admin_build_submission(
-            file_storage, email, store,
-            p.get("ean_header"), p.get("stock_header"),
-            p.get("tester_header"), entry_no
-        )
+        p=request.form; result=_admin_build_submission(request.files.get("file"),p.get("email"),p.get("store"),p.get("ean_header"),p.get("stock_header"),p.get("tester_header"),p.get("entry_no"))
         return jsonify({"ok":True,"message":"Stock uploaded and submitted on behalf of the selected user.",**result})
-    except Exception as e:
-        return jsonify({"ok":False,"error":str(e)}),400
+    except Exception as e:return jsonify({"ok":False,"error":str(e)}),400
 
 
 @app.post("/api/admin/upload-link")
@@ -1851,16 +1766,36 @@ def admin_upload_link():
         mp=load_mapping(True); allowed=set(mp.loc[mp["Email ID"].astype(str).str.lower()==email,"Store Name"].astype(str).str.strip())
         if store not in allowed:return jsonify({"ok":False,"error":"Selected shop is not assigned to the user."}),400
         hours=max(1,min(hours,168)); token=_upload_token({"email":email,"store":store,"issued_by":str(session.get("user_email"))},hours)
-        base=request.url_root.rstrip("/"); url=f"{base}/manual-upload?t={token}"
+        base=PUBLIC_BASE_URL or request.url_root.rstrip("/")
+         # Use a path token as the primary link so mobile apps/messengers do not
+         # accidentally strip or alter the query string. Query-string links remain supported.
+        url=f"{base}/manual-upload/{token}"
         return jsonify({"ok":True,"url":url,"expires_in_hours":hours,"email":email,"store":store})
     except Exception as e:return jsonify({"ok":False,"error":str(e)}),400
 
 
 @app.get("/manual-upload")
 def manual_upload_page():
-    token=str(request.args.get("t","")).strip(); payload=_verify_upload_token(token)
-    if not payload:return render_template("manual_upload.html",invalid=True),403
-    return render_template("manual_upload.html",invalid=False,token=token,email=payload["email"],store=payload["store"],expires_at=datetime.fromtimestamp(int(payload["exp"]),tz=timezone.utc).isoformat())
+    token=str(request.args.get("t","")).strip()
+    return _render_manual_upload(token)
+
+
+@app.get("/manual-upload/<path:token>")
+def manual_upload_page_path(token):
+    # Shareable-link variant. This avoids query-string stripping by some mobile
+    # browsers, WhatsApp/email previews, or corporate link scanners.
+    return _render_manual_upload(str(token or "").strip())
+
+
+def _render_manual_upload(token):
+    payload=_verify_upload_token(token)
+    if not payload:
+        response=make_response(render_template("manual_upload.html",invalid=True),403)
+        response.headers["Cache-Control"]="no-store, no-cache, must-revalidate, max-age=0"
+        return response
+    response=make_response(render_template("manual_upload.html",invalid=False,token=token,email=payload["email"],store=payload["store"],expires_at=datetime.fromtimestamp(int(payload["exp"]),tz=timezone.utc).isoformat()))
+    response.headers["Cache-Control"]="no-store, no-cache, must-revalidate, max-age=0"
+    return response
 
 
 @app.post("/manual-upload/preview")
