@@ -2,11 +2,6 @@ let email = '', stores = [], selectedStore = '', master = [], rows = [];
 let submissionHistory = [];
 let lastSubmission = null;
 let pendingEntryNo = '';   // reused if a submit has to be retried, so the server can ignore the duplicate
-const OFFLINE_DB = 'cormate-field-entry-v1';
-const OFFLINE_STORE = 'pending_submissions';
-const DRAFT_STORE = 'drafts';
-let offlineSyncTimer = null;
-let offlineSyncBusy = false;
 let currentPage = 1;
 const PAGE_SIZE = 25;
 let entrySearch = '';
@@ -14,107 +9,6 @@ let uidSeed = 1;
 let entrySortTimer = null;
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
-
-function offlineDb() {
-  return new Promise((resolve, reject) => {
-    if (!window.indexedDB) return reject(new Error('Offline storage is not supported by this browser.'));
-    const req = indexedDB.open(OFFLINE_DB, 1);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(OFFLINE_STORE)) db.createObjectStore(OFFLINE_STORE, { keyPath: 'entry_no' });
-      if (!db.objectStoreNames.contains(DRAFT_STORE)) db.createObjectStore(DRAFT_STORE, { keyPath: 'key' });
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error || new Error('Could not open offline storage.'));
-  });
-}
-async function offlinePut(storeName, value) {
-  const db = await offlineDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, 'readwrite');
-    tx.objectStore(storeName).put(value);
-    tx.oncomplete = () => { db.close(); resolve(true); };
-    tx.onerror = () => { db.close(); reject(tx.error || new Error('Offline save failed.')); };
-  });
-}
-async function offlineDelete(storeName, key) {
-  const db = await offlineDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, 'readwrite');
-    tx.objectStore(storeName).delete(key);
-    tx.oncomplete = () => { db.close(); resolve(true); };
-    tx.onerror = () => { db.close(); reject(tx.error); };
-  });
-}
-async function offlineAll(storeName) {
-  const db = await offlineDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, 'readonly');
-    const req = tx.objectStore(storeName).getAll();
-    req.onsuccess = () => { const out=req.result||[]; db.close(); resolve(out); };
-    req.onerror = () => { db.close(); reject(req.error); };
-  });
-}
-function csvCell(v) { return '"' + String(v ?? '').replace(/"/g, '""') + '"'; }
-function submissionPayload() {
-  const enteredRows = rows.filter(r => Number(r.stock || 0) + Number(r.tester || 0) > 0)
-    .map(r => ({ 'EAN Code': r.ean, 'Product Name': r.name, 'Stock': Number(r.stock || 0), 'Tester': Number(r.tester || 0), 'Total': Number(r.stock || 0) + Number(r.tester || 0) }));
-  if (!pendingEntryNo) pendingEntryNo = 'STK-' + new Date().toISOString().replace(/[-:TZ.]/g,'').slice(0,14) + '-' + Math.random().toString(36).slice(2,6).toUpperCase();
-  return { email, store_name:selectedStore, entry_no:pendingEntryNo, rows:enteredRows };
-}
-function downloadSubmissionCsv(payload, filenameSuffix='backup') {
-  if (!payload || !payload.rows || !payload.rows.length) return false;
-  const lines = [['Entry No','Submitted At','Email','Store Name','EAN / SKU','Product Name','Stock','Tester','Total']];
-  const now = new Date().toISOString();
-  payload.rows.forEach(r => lines.push([payload.entry_no,now,payload.email,payload.store_name,r['EAN Code'],r['Product Name'],r.Stock,r.Tester,r.Total]));
-  const csv = '\uFEFF' + lines.map(row => row.map(csvCell).join(',')).join('\r\n');
-  const blob = new Blob([csv], {type:'text/csv;charset=utf-8'});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a'); a.href=url; a.download=`Stock_${String(payload.store_name||'Store').replace(/[^a-z0-9]+/gi,'_')}_${payload.entry_no}_${filenameSuffix}.csv`;
-  document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),1000);
-  return true;
-}
-async function saveDraft() {
-  if (!email || !selectedStore || !rows.length) return;
-  try { await offlinePut(DRAFT_STORE, {key: email+'|'+selectedStore, email, store_name:selectedStore, rows:rows.map(r=>({uid:r.uid,ean:r.ean,name:r.name,stock:Number(r.stock||0),tester:Number(r.tester||0)})), updated_at:new Date().toISOString()}); } catch(e) { console.warn('Draft save failed',e); }
-}
-async function clearDraft() {
-  if (!email || !selectedStore) return;
-  try { await offlineDelete(DRAFT_STORE, email+'|'+selectedStore); } catch(e) {}
-}
-async function queueSubmission(payload, reason='offline') {
-  await offlinePut(OFFLINE_STORE, { ...payload, queued_at:new Date().toISOString(), reason, attempts:0 });
-}
-async function syncPendingSubmissions() {
-  if (offlineSyncBusy || !navigator.onLine) return;
-  offlineSyncBusy=true;
-  try {
-    const pending=await offlineAll(OFFLINE_STORE);
-    for (const item of pending) {
-      try {
-        const j=await getJson('/api/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(item),skipOfflineQueue:true});
-        await offlineDelete(OFFLINE_STORE,item.entry_no);
-        if (email===String(item.email||'').toLowerCase()) {
-          lastSubmission={entryNo:j.entry_no||item.entry_no,email:item.email,store:item.store_name,rows:item.rows.map(r=>({ean:r['EAN Code'],name:r['Product Name'],stock:Number(r.Stock||0),tester:Number(r.Tester||0),total:Number(r.Total||0)})),reportRows:[],savedRows:Number(j.saved_rows||item.rows.length),timestamp:new Date()};
-        }
-      } catch(e) {
-        console.warn('Pending submission sync deferred:', e.message);
-        break;
-      }
-    }
-    const left=await offlineAll(OFFLINE_STORE);
-    const banner=$('offlineStatus');
-    if (banner) { banner.classList.toggle('open',left.length>0); banner.textContent=left.length?`⚠ ${left.length} stock submission(s) saved on this device and waiting to sync.`:'✓ All saved submissions are synced.'; }
-    if (!left.length) loadLastSubmissions();
-  } catch(e) { console.warn('Offline queue unavailable',e); }
-  finally { offlineSyncBusy=false; }
-}
-function startOfflineSync() {
-  window.addEventListener('online',()=>syncPendingSubmissions());
-  window.addEventListener('offline',()=>{const b=$('offlineStatus');if(b){b.classList.add('open');b.textContent='⚠ Offline mode: entries will be saved on this device and synced automatically when connection returns.';}});
-  syncPendingSubmissions();
-  clearInterval(offlineSyncTimer); offlineSyncTimer=setInterval(syncPendingSubmissions,10000);
-}
 let entryStep=1;
 function showSetup(){entryStep=1;$('skuArea').classList.add('hidden');$('setupActions').style.display='flex';$('email').disabled=false;$('store').disabled=stores.length<=1;$('continueEntry').disabled=!email||!selectedStore;}
 
@@ -188,8 +82,6 @@ const _wait = ms => new Promise(r => setTimeout(r, ms));
 // GET requests are retried (server waking up, 502/503/504, flaky mobile data). POSTs are sent once.
 async function getJson(url, options = {}) {
   const isGet = !options.method || String(options.method).toUpperCase() === 'GET';
-  const skipOfflineQueue = !!options.skipOfflineQueue;
-  if (options.skipOfflineQueue) { options = {...options}; delete options.skipOfflineQueue; }
   const tries = isGet ? 3 : 1;
   let lastErr;
   for (let i = 0; i < tries; i++) {
@@ -270,7 +162,7 @@ async function loadSku() {
     rows=available.map(x=>({uid:uidSeed++,ean:String(x['EAN Code']??'').trim(),name:String(x['Product Name']??''),stock:0,tester:0})); entrySearch=''; currentPage=1; entryStep=2;
     $('setupActions').style.display='none'; $('email').disabled=true; $('store').disabled=true;
     setEntryLoading(true,'Loading SKU Entry',`${rows.length.toLocaleString('en-IN')} SKU(s) found. Building the entry table…`);
-    render(); await restoreDraftForCurrentStore(); msg(`${rows.length.toLocaleString('en-IN')} SKU(s) loaded for ${selectedStore}.`,true);
+    render(); msg(`${rows.length.toLocaleString('en-IN')} SKU(s) loaded for ${selectedStore}.`,true);
   } catch(e){ msg(e.message); }
   finally { setEntryLoading(false); if(button){button.disabled=!selectedStore;button.textContent='Continue to SKU Entry →';} }
 }
@@ -361,7 +253,7 @@ function render() {
     </div>
     <div class="entry-submit-bar">
       <div><b>Ready to submit?</b><span class="muted"> ${entered} SKU(s) entered • ${enteredQty().toLocaleString('en-IN')} total Qty</span></div>
-      <div class="entry-submit-actions"><button id="downloadCsvTop" class="btn secondary" ${entered ? '' : 'disabled'}>⬇ CSV Backup</button><button id="submitEntryTop" class="btn" ${rows.length ? '' : 'disabled'}>Submit Stock</button></div>
+      <button id="submitEntryTop" class="btn" ${rows.length ? '' : 'disabled'}>Submit Stock</button>
     </div>
     <div class="entry-search-sort">
       <div class="entry-search-wrap"><span>⌕</span><input id="entrySearch" type="search" value="${esc(entrySearch)}" placeholder="Search EAN / SKU / Product name…" autocomplete="off"></div>
@@ -414,7 +306,6 @@ function render() {
       if (mobileCell) mobileCell.textContent = total;
 
       updateSummary();
-      clearTimeout(window.__draftTimer); window.__draftTimer=setTimeout(saveDraft,350);
       const top = $('submitEntryTop');
       if (top) top.disabled = !rows.length;
     };
@@ -442,7 +333,6 @@ function render() {
   $('prevPage').onclick = () => { if (currentPage > 1) { currentPage--; render(); } };
   $('nextPage').onclick = () => { if (currentPage < pages) { currentPage++; render(); } };
   $('submitEntryTop').onclick = submitAll;
-  const csvBtn=$('downloadCsvTop'); if(csvBtn) csvBtn.onclick=()=>{ const p=submissionPayload(); if(!p.rows.length){msg('Enter at least one quantity before downloading the CSV.',false);return;} downloadSubmissionCsv(p,'manual-backup'); msg('CSV backup downloaded. Keep this file until the submission is confirmed.',true); };
   renderMasterResults();
   updateSummary();
 }
@@ -483,45 +373,51 @@ function addMasterSku(ean) {
 async function submitAll() {
   if (!rows.length || !selectedStore) return;
   const button = $('submitEntryTop');
-  if (button) { button.disabled = true; button.textContent = 'Saving…'; }
-  const payload = submissionPayload();
-  if (!payload.rows.length) { showPopup('Nothing to submit', 'Please enter Stock or Tester quantity for at least one SKU.', false, false); if (button) { button.disabled=false; button.textContent='Submit Stock'; } return; }
-
-  // ALWAYS create a device-side CSV backup first. This happens directly from the
-  // user's click, so mobile browsers are much less likely to block the download.
-  downloadSubmissionCsv(payload, 'auto-backup');
-  try { await offlinePut(OFFLINE_STORE, { ...payload, queued_at:new Date().toISOString(), reason:'backup-before-submit', attempts:0 }); } catch(e) { console.warn('Could not create offline queue',e); }
-  msg(navigator.onLine ? 'CSV backup created. Submitting stock…' : 'No internet. CSV backup created and stock saved safely on this device.', true);
-
+  if (button) { button.disabled = true; button.textContent = 'Submitting…'; }
+  msg('Submitting entered SKU quantities…', true);
+  const enteredRows = rows.filter(r => Number(r.stock || 0) + Number(r.tester || 0) > 0).map(r => ({ ean: r.ean, name: r.name, stock: Number(r.stock || 0), tester: Number(r.tester || 0), total: Number(r.stock || 0) + Number(r.tester || 0) }));
+  if (!enteredRows.length) { showPopup('Nothing to submit', 'Please enter Stock or Tester quantity for at least one SKU.', false, false); if (button) { button.disabled=false; button.textContent='Submit Stock'; } return; }
+  if (!pendingEntryNo) pendingEntryNo = 'STK-' + new Date().toISOString().replace(/[-:TZ.]/g,'').slice(0,14) + '-' + Math.random().toString(36).slice(2,6).toUpperCase();
+  const entryNo = pendingEntryNo;
   try {
-    const j = await getJson('/api/submit', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload), skipOfflineQueue:true });
+    const payload = {
+      email,
+      store_name: selectedStore,
+      entry_no: entryNo,
+      rows: enteredRows.map(r => ({ 'EAN Code': r.ean, 'Product Name': r.name, 'Stock': r.stock, 'Tester': r.tester, 'Total': r.total }))
+    };
+    const j = await getJson('/api/submit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     const saved = Number(j.saved_rows || 0);
-    await offlineDelete(OFFLINE_STORE,payload.entry_no);
-    await clearDraft();
 
-    let reportRows=[];
+    // Fetch the exact system/movement snapshot needed for the variance PDF.
+    // This is deliberately separate from the save call so submission speed is
+    // not affected if PDF data preparation has an issue.
+    let reportRows = [];
     try {
-      const report=await getJson('/api/entry-report-data',{method:'POST',headers:{'Content-Type':'application/json'},body:payload,skipOfflineQueue:true});
-      reportRows=report.rows||[];
+      const report = await getJson('/api/entry-report-data', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      reportRows = report.rows || [];
     } catch (_) {}
-    lastSubmission={entryNo:j.entry_no||payload.entry_no,email,store:selectedStore,rows:payload.rows.map(r=>({ean:r['EAN Code'],name:r['Product Name'],stock:r.Stock,tester:r.Tester,total:r.Total})),reportRows,savedRows:saved,timestamp:new Date()};
-    showPopup('Submission Successful',`Entry No. ${j.entry_no||payload.entry_no} • ${saved.toLocaleString('en-IN')} SKU rows submitted for ${selectedStore}. CSV backup has also been saved.`,true,true);
-    msg(`${saved.toLocaleString('en-IN')} SKU rows submitted successfully. CSV backup downloaded.`,true);
-    pendingEntryNo='';
+
+    lastSubmission = { entryNo: j.entry_no || entryNo, email, store: selectedStore, rows: enteredRows, reportRows, savedRows: saved, timestamp: new Date() };
+    showPopup('Submission Successful', `Entry No. ${j.entry_no || entryNo} • ${saved.toLocaleString('en-IN')} SKU rows submitted for ${selectedStore}.`, true, true);
+    msg(`${saved.toLocaleString('en-IN')} SKU rows submitted successfully.`, true);
+    pendingEntryNo = '';
     loadLastSubmissions();
-    rows.forEach(r=>{r.stock=0;r.tester=0;}); currentPage=1; render();
-  } catch(e) {
-    // The entry is already safely in IndexedDB + CSV. Do NOT clear the form.
-    try { await queueSubmission(payload, navigator.onLine?'server-unavailable':'offline'); } catch(_) {}
-    showPopup('Saved Offline — Not Lost',`Entry ${payload.entry_no} is saved on this device and the CSV backup was downloaded. It will automatically submit when the server/connection is available again. Do not clear your browser data until it syncs.`,true,false);
-    msg(`Saved safely on this device. Waiting to sync: ${payload.entry_no}`,true);
-    const b=$('offlineStatus'); if(b){b.classList.add('open');b.textContent='⚠ Submission saved locally and waiting to sync. Keep this page/app installed/open; it will retry automatically.';}
+    rows.forEach(r => { r.stock = 0; r.tester = 0; });
+    currentPage = 1;
+    render();
+  } catch (e) {
+    showPopup('Submission Failed', (e.message || 'The submission could not be completed.') + ' Your quantities are still on screen — tap Submit again (it will not create a duplicate).', false, false);
+    loadLastSubmissions();
+    msg(`Submission failed: ${e.message}`, false);
   } finally {
-    const b=$('submitEntryTop'); if(b){b.disabled=!rows.length;b.textContent='Submit Stock';}
-    const c=$('downloadCsvTop'); if(c)c.disabled=enteredCount()===0;
+    const b = $('submitEntryTop');
+    if (b) { b.disabled = !rows.length; b.textContent = 'Submit Stock'; }
   }
 }
-
 
 
 async function deliverGeneratedPdf(doc, filename) {
@@ -715,21 +611,9 @@ $('email').addEventListener('keydown', e => { if (e.key === 'Enter') loadMeta();
 
 // The authenticated session already contains the user's email.
 // Fetch its mapped shops automatically; no second email confirmation is required.
-async function restoreDraftForCurrentStore() {
-  if (!email || !selectedStore) return;
-  try {
-    const all=await offlineAll(DRAFT_STORE); const d=all.find(x=>x.key===email+'|'+selectedStore);
-    if (!d || !Array.isArray(d.rows)) return;
-    const positive=d.rows.filter(r=>Number(r.stock||0)||Number(r.tester||0));
-    if (!positive.length) return;
-    const byEan=new Map(rows.map(r=>[String(r.ean).trim(),r]));
-    positive.forEach(r=>{const target=byEan.get(String(r.ean).trim());if(target){target.stock=Number(r.stock||0);target.tester=Number(r.tester||0);}});
-    render(); msg(`Recovered ${positive.length} entered SKU(s) from this device.`,true);
-  } catch(e) { console.warn('Draft restore failed',e); }
+if ($('email') && $('email').value.trim()) {
+  loadMeta();
 }
-if ($('email') && $('email').value.trim()) { loadMeta(); }
-startOfflineSync();
-
 $('store').onchange = () => { selectedStore=$('store').value||''; $('continueEntry').disabled=!selectedStore; loadLastSubmissions(); };
 $('continueEntry').onclick = loadSku;
 $('syncData').onclick = syncData;

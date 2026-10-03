@@ -55,3 +55,7 @@ Admin edits are written to the configured JSON files immediately. Render's defau
    - `GITHUB_SHOPS_PATH`
 
 Do not expose the GitHub token to users.
+
+
+## Original Upload Storage
+Manual Excel/CSV/PDF uploads are stored in Google Drive under `CORMATE_Uploads/Excel_CSV_Uploads` or `CORMATE_Uploads/PDF_Uploads`. The `Submissions` sheet records the Drive file URL; PDF uploads are also logged in `PDF Uploads`.

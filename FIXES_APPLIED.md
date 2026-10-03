@@ -18,18 +18,3 @@
 2. **Render free plan sleeps** after ~15 min idle (30-60 s first load). Ping `https://<your-app>/healthz` every 10 min (UptimeRobot) or use a paid instance.
 3. **Passwords:** `data/users.json` still holds plaintext passwords (`Admin@123`, etc.). Move to hashes via the Admin panel (saving a user with a new password stores a hash).
 4. `tests/_outdated_test_app.py.txt` tests features this code base does not have (login throttling, CSRF); new tests are in `tests/test_stability.py`.
-
-## Offline-safe stock submission update — 2026-10-03
-- Added device-side IndexedDB draft persistence for Physical Stock Entry.
-- Added CSV Backup button before submission.
-- Submit Stock now automatically creates a CSV backup before sending data.
-- If internet/Render is unavailable, the entry is retained locally and queued for automatic retry.
-- Pending entries retry on browser `online` event and periodically while the Entry page remains open.
-- Added PWA static-asset caching for the Entry experience; authenticated HTML is intentionally not cached to avoid cross-user/session leakage.
-- Added Google Apps Script entry-number idempotency so timeout/retry cannot append the same stock entry twice.
-- Failed submissions no longer clear the entered quantities.
-- Added recovery of locally saved quantity drafts when the same shop is reopened.
-- Added `manifest.json` and `sw.js` for the offline-capable/PWA shell.
-
-### Important deployment requirement
-`SUBMISSION_API_URL` and `SUBMISSION_API_SECRET` must be configured in Render for Google Sheets to remain the authoritative remote submission store. Browser offline mode cannot send to a server that is completely unreachable; it queues the entry and automatically submits once the service becomes reachable again. The downloaded CSV is the immediate independent backup.

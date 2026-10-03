@@ -82,3 +82,7 @@ Flow:
 `Admin Save → GitHub commit → Render detects commit → Render deploys → new configuration is live`
 
 The app publishes to GitHub before updating its local runtime copy. If the GitHub commit fails, the Admin save fails instead of pretending the change is permanent.
+
+
+## Original Upload Storage
+Manual Excel/CSV/PDF uploads are stored in Google Drive under `CORMATE_Uploads/Excel_CSV_Uploads` or `CORMATE_Uploads/PDF_Uploads`. The `Submissions` sheet records the Drive file URL; PDF uploads are also logged in `PDF Uploads`.
