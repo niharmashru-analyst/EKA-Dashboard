@@ -1761,16 +1761,8 @@ def admin_upload_submit():
 def admin_upload_link():
     if not _admin_required(): return jsonify({"ok":False,"error":"Admin access required."}),403
     try:
-        p=request.get_json(silent=True) or {}; email=str(p.get("email","")).strip().lower(); store=str(p.get("store","")).strip(); hours=int(p.get("hours") or UPLOAD_LINK_HOURS)
-        if not _user_record(email):return jsonify({"ok":False,"error":"Target user does not exist."}),404
-        mp=load_mapping(True); allowed=set(mp.loc[mp["Email ID"].astype(str).str.lower()==email,"Store Name"].astype(str).str.strip())
-        if store not in allowed:return jsonify({"ok":False,"error":"Selected shop is not assigned to the user."}),400
-        hours=max(1,min(hours,168)); token=_upload_token({"email":email,"store":store,"issued_by":str(session.get("user_email"))},hours)
         base=PUBLIC_BASE_URL or request.url_root.rstrip("/")
-         # Use a path token as the primary link so mobile apps/messengers do not
-         # accidentally strip or alter the query string. Query-string links remain supported.
-        url=f"{base}/manual-upload/{token}"
-        return jsonify({"ok":True,"url":url,"expires_in_hours":hours,"email":email,"store":store})
+        return jsonify({"ok":True,"url":f"{base}/manual-upload","master":True,"message":"Master manual upload link ready. Users enter their registered email and shop on the page."})
     except Exception as e:return jsonify({"ok":False,"error":str(e)}),400
 
 
@@ -1787,13 +1779,38 @@ def manual_upload_page_path(token):
     return _render_manual_upload(str(token or "").strip())
 
 
+def _master_upload_identity(email, store):
+    """Validate the email/shop pair for the single shared manual-upload link."""
+    email = str(email or "").strip().lower()
+    store = str(store or "").strip()
+    if not email or not store:
+        raise RuntimeError("Enter your email and shop name.")
+    mp = load_mapping(True)
+    if mp is None or mp.empty:
+        raise RuntimeError("User/shop mapping is unavailable. Please contact the administrator.")
+    email_col = mp["Email ID"].astype(str).str.strip().str.lower()
+    store_col = mp["Store Name"].astype(str).str.strip()
+    allowed = set(store_col[email_col == email])
+    if not allowed:
+        raise RuntimeError("This email is not registered for manual upload.")
+    if store not in allowed:
+        raise RuntimeError("This shop is not assigned to this email.")
+    return {"email": email, "store": store}
+
+
 def _render_manual_upload(token):
-    payload=_verify_upload_token(token)
-    if not payload:
-        response=make_response(render_template("manual_upload.html",invalid=True),403)
+    # Master link: /manual-upload — no temporary token required.
+    # Legacy signed links continue to work when a token is supplied.
+    if not token:
+        response=make_response(render_template("manual_upload.html",invalid=False,master_link=True,token="",email="",store="",expires_at=""))
         response.headers["Cache-Control"]="no-store, no-cache, must-revalidate, max-age=0"
         return response
-    response=make_response(render_template("manual_upload.html",invalid=False,token=token,email=payload["email"],store=payload["store"],expires_at=datetime.fromtimestamp(int(payload["exp"]),tz=timezone.utc).isoformat()))
+    payload=_verify_upload_token(token)
+    if not payload:
+        response=make_response(render_template("manual_upload.html",invalid=True,master_link=False),403)
+        response.headers["Cache-Control"]="no-store, no-cache, must-revalidate, max-age=0"
+        return response
+    response=make_response(render_template("manual_upload.html",invalid=False,master_link=False,token=token,email=payload["email"],store=payload["store"],expires_at=datetime.fromtimestamp(int(payload["exp"]),tz=timezone.utc).isoformat()))
     response.headers["Cache-Control"]="no-store, no-cache, must-revalidate, max-age=0"
     return response
 
@@ -1801,7 +1818,8 @@ def _render_manual_upload(token):
 @app.post("/manual-upload/preview")
 def manual_upload_preview():
     try:
-        token=str(request.form.get("token","")).strip(); payload=_verify_upload_token(token)
+        token=str(request.form.get("token","")).strip()
+        payload=_verify_upload_token(token) if token else _master_upload_identity(request.form.get("email"),request.form.get("store"))
         if not payload:return jsonify({"ok":False,"error":"This upload link is invalid or expired."}),403
         df=_read_upload_excel(request.files.get("file")); headers=[str(x) for x in df.columns]
         return jsonify({"ok":True,"headers":headers,"rows":int(len(df)),"suggestions":{"ean":_header_auto(headers,["ean","ean code","sku code","barcode","barcode no","product code"]),"stock":_header_auto(headers,["stock","stock qty","quantity","qty","physical stock"]),"tester":_header_auto(headers,["tester","tester qty","tester quantity"])}})
@@ -1811,7 +1829,8 @@ def manual_upload_preview():
 @app.post("/manual-upload/submit")
 def manual_upload_submit():
     try:
-        token=str(request.form.get("token","")).strip(); payload=_verify_upload_token(token)
+        token=str(request.form.get("token","")).strip()
+        payload=_verify_upload_token(token) if token else _master_upload_identity(request.form.get("email"),request.form.get("store"))
         if not payload:return jsonify({"ok":False,"error":"This upload link is invalid or expired."}),403
         file_storage=request.files.get("file")
         if not file_storage or not file_storage.filename:

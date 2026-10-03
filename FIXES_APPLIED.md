@@ -18,3 +18,10 @@
 2. **Render free plan sleeps** after ~15 min idle (30-60 s first load). Ping `https://<your-app>/healthz` every 10 min (UptimeRobot) or use a paid instance.
 3. **Passwords:** `data/users.json` still holds plaintext passwords (`Admin@123`, etc.). Move to hashes via the Admin panel (saving a user with a new password stores a hash).
 4. `tests/_outdated_test_app.py.txt` tests features this code base does not have (login throttling, CSRF); new tests are in `tests/test_stability.py`.
+
+
+## Master Manual Upload Link
+- `/manual-upload` is now the single shared manual upload URL.
+- Users enter registered email + assigned shop.
+- Email/shop is validated against `data/mapping.json`.
+- Legacy signed links remain supported.
