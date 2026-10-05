@@ -19,6 +19,16 @@ SECRET_KEY = os.getenv("SECRET_KEY", "").strip()
 if not SECRET_KEY:
     raise RuntimeError("SECRET_KEY must be configured in the server environment; refusing to start with a fallback key.")
 app.secret_key = SECRET_KEY
+
+@app.errorhandler(500)
+def handle_internal_error(error):
+    # Never return an HTML error page to the upload/admin JavaScript.
+    # Log the real exception and return a compact JSON response for API calls.
+    log.exception("Unhandled server error", exc_info=error)
+    if request.path.startswith("/api/") or request.path.startswith("/manual-upload"):
+        return jsonify({"ok": False, "error": "Server error. Please check the Render logs for the exact cause."}), 500
+    return "Internal server error", 500
+
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE=os.getenv("SESSION_COOKIE_SAMESITE", "Lax"), SESSION_COOKIE_SECURE=os.getenv("SESSION_COOKIE_SECURE", "1").strip().lower() not in {"0", "false", "no"})
 DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@cormate.com").strip().lower()
@@ -37,8 +47,6 @@ UPLOAD_LINK_HOURS = int(os.getenv("UPLOAD_LINK_HOURS", "48"))
 # Optional public URL used for shareable manual-upload links.
 # Example on Render: https://your-app.onrender.com
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
-MANUAL_LINK_CONFIG_PATH = os.path.join(BASE_DIR, "data", "manual_link.json")
-
 
 @app.context_processor
 def _asset_helpers():
@@ -826,13 +834,13 @@ def save_remote_inward(email, po, rows):
     return saved
 
 
-def remote_request(method, payload=None):
+def remote_request(method, payload=None, query=None):
     if not SUBMISSION_API_URL: return None
     payload=payload or {}
     try:
         if SUBMISSION_API_SECRET:
             if method.upper()=="GET":
-                r=requests.get(SUBMISSION_API_URL,params={"secret":SUBMISSION_API_SECRET},timeout=(6,30))
+                params={"secret":SUBMISSION_API_SECRET}; params.update(query or {}); r=requests.get(SUBMISSION_API_URL,params=params,timeout=(6,30))
             else:
                 payload={**payload,"secret":SUBMISSION_API_SECRET}; r=requests.request(method,SUBMISSION_API_URL,json=payload,timeout=(8,40))
         else:
@@ -1266,15 +1274,6 @@ def _github_publish(path, payload, message):
         raise RuntimeError(str(e))
 
 
-def _manual_link_config():
-    try:
-        with open(MANUAL_LINK_CONFIG_PATH, "r", encoding="utf-8") as f:
-            cfg=json.load(f)
-    except Exception:
-        cfg={"enabled": True}
-    return {"enabled": bool(cfg.get("enabled", True))}
-
-
 def _save_admin_json(path, payload, message):
     # When GitHub persistence is configured, publish first. This prevents a
     # failed GitHub write from leaving a misleading local-only admin change
@@ -1450,10 +1449,10 @@ def _remote_file_payload(file_storage):
         raise RuntimeError("The uploaded file is empty.")
     name = str(file_storage.filename).strip()
     mime = str(file_storage.mimetype or "application/octet-stream")
-    return {"file_name": name, "mime_type": mime, "base64": base64.b64encode(raw).decode("ascii")}
+    return {"file_name": name, "mime_type": mime, "size_bytes": len(raw), "base64": base64.b64encode(raw).decode("ascii")}
 
 
-def _admin_build_submission(file_storage, email, store, ean_header, stock_header, tester_header="", entry_no=""):
+def _admin_build_submission(file_storage, email, store, ean_header, stock_header, tester_header="", entry_no="", issued_by=""):
     email=str(email or "").strip().lower(); store=str(store or "").strip()
     rec=_user_record(email)
     if not rec: raise RuntimeError("Target user does not exist.")
@@ -1504,7 +1503,8 @@ def _admin_build_submission(file_storage, email, store, ean_header, stock_header
             agg[key]["Stock"]+=r["Stock"]; agg[key]["Tester"]+=r["Tester"]; agg[key]["Total"]+=r["Total"]
     cleaned=list(agg.values())
     entry_no=str(entry_no or "").strip() or ("STK-"+datetime.now().strftime("%Y%m%d-%H%M%S")+"-"+secrets.token_hex(2).upper())
-    payload={"entry_no":entry_no,"email":email,"store_name":store,"rows":cleaned,"submitted_by":str(session.get("user_email") or "admin"),"submission_mode":"admin_upload"}
+    actor=str(issued_by or session.get("user_email") or "admin").strip().lower()
+    payload={"entry_no":entry_no,"email":email,"store_name":store,"rows":cleaned,"submitted_by":actor,"issued_by":actor,"audit_id":"AUD-"+datetime.now().strftime("%Y%m%d-%H%M%S")+"-"+secrets.token_hex(4).upper(),"client_ip":request.headers.get("X-Forwarded-For",request.remote_addr or "").split(",")[0].strip(),"user_agent":request.headers.get("User-Agent","")[:500],"submission_mode":"admin_upload"}
     if original_file:
         payload["file"] = original_file
     if SUBMISSION_API_URL:
@@ -1515,8 +1515,8 @@ def _admin_build_submission(file_storage, email, store, ean_header, stock_header
         if saved!=len(cleaned): raise RuntimeError(f"Submission mismatch: sent {len(cleaned)} rows but service saved {saved}.")
     else:
         saved=save_local_submission(payload)
-    remember_submission(entry_no,email,store,cleaned,str(session.get("user_email") or "admin"))
-    return {"entry_no":entry_no,"saved_rows":saved,"skipped_rows":skipped,"target_email":email,"store_name":store}
+    remember_submission(entry_no,email,store,cleaned,actor)
+    return {"entry_no":entry_no,"saved_rows":saved,"skipped_rows":skipped,"target_email":email,"store_name":store,"audit_id":result.get("audit_id","") if SUBMISSION_API_URL else payload.get("audit_id",""),"receipt_hash":result.get("receipt_hash","") if SUBMISSION_API_URL else ""}
 
 def _admin_access_rows():
     users = _load_users_config().get("users", {})
@@ -1609,6 +1609,17 @@ def admin_submissions():
     if not _admin_required(): return jsonify({"ok":False,"error":"Admin access required."}),403
     groups, err = _submission_entry_groups(250)
     return jsonify({"ok":True,"submissions":groups,"warning":err if (err and not groups) else "","stale":bool(err and groups)})
+
+
+@app.get("/api/admin/audit")
+def admin_audit():
+    if not _admin_required(): return jsonify({"ok":False,"error":"Admin access required."}),403
+    if not SUBMISSION_API_URL: return jsonify({"ok":True,"records":[],"warning":"Google Apps Script audit service is not configured."})
+    try:
+        result=remote_request("GET",query={"view":"audit","limit":"500"}) or {}
+        if not result.get("ok"): return jsonify(result),502
+        return jsonify({"ok":True,"records":result.get("records",[])})
+    except Exception as e:return jsonify({"ok":False,"error":str(e)}),502
 
 
 @app.post("/api/admin/user/save")
@@ -1763,33 +1774,18 @@ def admin_upload_preview():
 def admin_upload_submit():
     if not _admin_required(): return jsonify({"ok":False,"error":"Admin access required."}),403
     try:
-        p=request.form; result=_admin_build_submission(request.files.get("file"),p.get("email"),p.get("store"),p.get("ean_header"),p.get("stock_header"),p.get("tester_header"),p.get("entry_no"))
+        p=request.form; result=_admin_build_submission(request.files.get("file"),p.get("email"),p.get("store"),p.get("ean_header"),p.get("stock_header"),p.get("tester_header"),p.get("entry_no"),str(session.get("user_email") or "admin"))
         return jsonify({"ok":True,"message":"Stock uploaded and submitted on behalf of the selected user.",**result})
-    except Exception as e:return jsonify({"ok":False,"error":str(e)}),400
-
-
-@app.get("/api/admin/manual-link")
-def admin_manual_link_get():
-    if not _admin_required(): return jsonify({"ok":False,"error":"Admin access required."}),403
-    base=PUBLIC_BASE_URL or request.url_root.rstrip("/")
-    cfg=_manual_link_config()
-    return jsonify({"ok":True,"url":f"{base}/manual-upload","enabled":cfg["enabled"],"master":True})
-
-
-@app.post("/api/admin/manual-link")
-def admin_manual_link_save():
-    if not _admin_required(): return jsonify({"ok":False,"error":"Admin access required."}),403
-    try:
-        enabled=bool(request.get_json(silent=True).get("enabled", True))
-        payload={"enabled":enabled}
-        result=_save_admin_json(MANUAL_LINK_CONFIG_PATH,payload,"Admin change master manual upload link")
-        return jsonify({"ok":True,"enabled":enabled,"published":result.get("published",False),"message":"Master manual upload link enabled." if enabled else "Master manual upload link disabled."})
     except Exception as e:return jsonify({"ok":False,"error":str(e)}),400
 
 
 @app.post("/api/admin/upload-link")
 def admin_upload_link():
-    return admin_manual_link_get()
+    if not _admin_required(): return jsonify({"ok":False,"error":"Admin access required."}),403
+    try:
+        base=PUBLIC_BASE_URL or request.url_root.rstrip("/")
+        return jsonify({"ok":True,"url":f"{base}/manual-upload","master":True,"message":"Master manual upload link ready. Users enter their registered email and shop on the page."})
+    except Exception as e:return jsonify({"ok":False,"error":str(e)}),400
 
 
 @app.get("/manual-upload")
@@ -1825,11 +1821,6 @@ def _master_upload_identity(email, store):
 
 
 def _render_manual_upload(token):
-    # Master link can be enabled/disabled by the Admin Control Center.
-    if not token and not _manual_link_config()["enabled"]:
-        response=make_response(render_template("manual_upload.html",invalid=True,master_link=True,token="",email="",store="",expires_at=""),403)
-        response.headers["Cache-Control"]="no-store, no-cache, must-revalidate, max-age=0"
-        return response
     # Master link: /manual-upload — no temporary token required.
     # Legacy signed links continue to work when a token is supplied.
     if not token:
@@ -1868,14 +1859,14 @@ def manual_upload_submit():
             raise RuntimeError("Choose a file first.")
         if str(file_storage.filename).lower().endswith(".pdf"):
             original_file=_remote_file_payload(file_storage)
-            remote_payload={"entry_no":str(request.form.get("entry_no","")).strip() or ("PDF-"+datetime.now().strftime("%Y%m%d-%H%M%S")+"-"+secrets.token_hex(2).upper()),"email":payload["email"],"store_name":payload["store"],"rows":[],"submitted_by":str(session.get("user_email") or payload["email"]),"submission_mode":"pdf_upload","file":original_file}
+            remote_payload={"entry_no":str(request.form.get("entry_no","")).strip() or ("PDF-"+datetime.now().strftime("%Y%m%d-%H%M%S")+"-"+secrets.token_hex(2).upper()),"email":payload["email"],"store_name":payload["store"],"rows":[],"submitted_by":str(payload.get("issued_by") or payload["email"]),"issued_by":str(payload.get("issued_by") or payload["email"]),"audit_id":"AUD-"+datetime.now().strftime("%Y%m%d-%H%M%S")+"-"+secrets.token_hex(4).upper(),"client_ip":request.headers.get("X-Forwarded-For",request.remote_addr or "").split(",")[0].strip(),"user_agent":request.headers.get("User-Agent","")[:500],"submission_mode":"pdf_upload","file":original_file}
             if SUBMISSION_API_URL:
                 result=remote_request("POST",remote_payload) or {}
                 if not result.get("ok"): raise RuntimeError(result.get("error","Submission service rejected the PDF upload."))
             else:
                 raise RuntimeError("PDF uploads require the Google Apps Script submission service to be configured.")
             return jsonify({"ok":True,"message":"PDF uploaded successfully.",**result})
-        result=_admin_build_submission(file_storage,payload["email"],payload["store"],request.form.get("ean_header"),request.form.get("stock_header"),request.form.get("tester_header"),request.form.get("entry_no"))
+        result=_admin_build_submission(file_storage,payload["email"],payload["store"],request.form.get("ean_header"),request.form.get("stock_header"),request.form.get("tester_header"),request.form.get("entry_no"),payload.get("issued_by",""))
         return jsonify({"ok":True,"message":"Stock uploaded successfully.",**result})
     except Exception as e:return jsonify({"ok":False,"error":str(e)}),400
 
@@ -2111,7 +2102,8 @@ def submit():
         if entry_already_saved(entry_no):
             # The browser retried (slow network / double tap). The first copy is already stored.
             return jsonify({"ok":True,"message":"Stock was already submitted.","saved_rows":len(cleaned),"entry_no":entry_no,"duplicate":True})
-        payload={"entry_no":entry_no,"email":email,"store_name":store,"rows":cleaned}
+        actor=str(session.get("user_email") or email).strip().lower()
+        payload={"entry_no":entry_no,"email":email,"store_name":store,"rows":cleaned,"submitted_by":actor,"issued_by":actor,"audit_id":"AUD-"+datetime.now().strftime("%Y%m%d-%H%M%S")+"-"+secrets.token_hex(4).upper(),"client_ip":request.headers.get("X-Forwarded-For",request.remote_addr or "").split(",")[0].strip(),"user_agent":request.headers.get("User-Agent","")[:500],"submission_mode":"field_entry"}
         if SUBMISSION_API_URL:
             result=remote_request("POST",payload) or {}
             if not result.get("ok"):
