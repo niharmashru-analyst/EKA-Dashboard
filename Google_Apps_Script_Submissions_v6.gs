@@ -26,6 +26,7 @@ const SECRET_FALLBACK = 'EKA2026Stock123';
 
 const SHEET_NAME   = 'Submissions';
 const PDF_LOG_SHEET = 'PDF Uploads';
+const AUDIT_LOG_SHEET = 'Upload Audit';
 
 // Optional: your own Drive folder ID. Blank = auto-create "CORMATE_Uploads".
 const DRIVE_FOLDER_ID = '';
@@ -37,6 +38,13 @@ const HEADERS = [
   'entry_no', 'submitted_at', 'email', 'store_name', 'ean_code',
   'product_name', 'stock', 'tester', 'total', 'submitted_by',
   'submission_mode', 'file_name', 'file_type', 'drive_file_id', 'drive_file_url'
+];
+
+const AUDIT_HEADERS = [
+  'audit_id', 'event_at', 'status', 'action', 'entry_no', 'email', 'store_name',
+  'submitted_by', 'issued_by', 'submission_mode', 'file_name', 'file_type',
+  'file_size_bytes', 'saved_rows', 'client_ip', 'user_agent', 'drive_file_id',
+  'drive_file_url', 'error', 'receipt_hash'
 ];
 
 const PDF_HEADERS = [
@@ -204,6 +212,13 @@ function sheet_() {
   return sh;
 }
 
+function auditSheet_() {
+  const ss = getSpreadsheet_();
+  const sh = ss.getSheetByName(AUDIT_LOG_SHEET) || ss.insertSheet(AUDIT_LOG_SHEET);
+  migrate_(sh, AUDIT_HEADERS);
+  return sh;
+}
+
 function pdfSheet_() {
   const ss = getSpreadsheet_();
   const sh = ss.getSheetByName(PDF_LOG_SHEET) || ss.insertSheet(PDF_LOG_SHEET);
@@ -268,6 +283,23 @@ function entryExists_(sh, entryNo) {
 }
 
 
+function makeAuditId_() {
+  return 'AUD-' + Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyyMMdd-HHmmss') + '-' + Utilities.getUuid().slice(0, 8).toUpperCase();
+}
+function hashReceipt_(auditId, entryNo, email, store, fileName, eventAt) {
+  const raw=[auditId,entryNo,email,store,fileName,eventAt,getSecret_()].join('|');
+  const digest=Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256,raw,Utilities.Charset.UTF_8);
+  return digest.map(function(b){const n=b<0?b+256:b;return ('0'+n.toString(16)).slice(-2);}).join('');
+}
+function writeAudit_(a) {
+  try {
+    const sh=auditSheet_(), eventAt=a.event_at||new Date().toISOString(), auditId=a.audit_id||makeAuditId_();
+    const receipt=a.receipt_hash||hashReceipt_(auditId,a.entry_no||'',a.email||'',a.store_name||'',a.file_name||'',eventAt);
+    writeRows_(sh,[[auditId,eventAt,a.status||'SUCCESS',a.action||'SUBMISSION',a.entry_no||'',a.email||'',a.store_name||'',a.submitted_by||'',a.issued_by||'',a.submission_mode||'',a.file_name||'',a.file_type||'',num_(a.file_size_bytes),num_(a.saved_rows),a.client_ip||'',a.user_agent||'',a.drive_file_id||'',a.drive_file_url||'',a.error||'',receipt]],[1,2,3,4,5,6,7,8,9,10,11,12,15,16,17,18,19,20]);
+    SpreadsheetApp.flush(); return {audit_id:auditId,receipt_hash:receipt};
+  } catch(err) { console.error('Audit write failed: '+err); return {audit_id:a.audit_id||'',receipt_hash:''}; }
+}
+
 /* ---------- GET ---------- */
 
 function doGet(e) {
@@ -283,13 +315,19 @@ function doGet(e) {
       sh = withLock_(sheet_);
     }
 
+    const params=(e&&e.parameter)?e.parameter:{};
+    if(String(params.view||'').toLowerCase()==='audit'){
+      let ash=getSpreadsheet_().getSheetByName(AUDIT_LOG_SHEET);
+      if(!ash||needsMigration_(ash,AUDIT_HEADERS)) ash=withLock_(auditSheet_);
+      const av=ash.getDataRange().getValues();
+      const records=av.length<2?[]:av.slice(1).map(function(r){const o={};AUDIT_HEADERS.forEach(function(h,i){o[h]=(r[i]===undefined||r[i]===null)?'':r[i];});return o;});
+      const limit=Math.max(1,Math.min(Number(params.limit||500),1000)); records.reverse();
+      return json_({ok:true,records:records.slice(0,limit)});
+    }
     const values = sh.getDataRange().getValues();
     if (values.length < 2) return json_({ ok: true, records: [] });
-
     const records = values.slice(1).map(function (r) {
-      const o = {};
-      HEADERS.forEach(function (h, i) { o[h] = (r[i] === undefined || r[i] === null) ? '' : r[i]; });
-      return o;
+      const o = {}; HEADERS.forEach(function (h, i) { o[h] = (r[i] === undefined || r[i] === null) ? '' : r[i]; }); return o;
     });
     return json_({ ok: true, records: records });
   } catch (err) {
@@ -301,7 +339,8 @@ function doGet(e) {
 /* ---------- POST ---------- */
 
 function doPost(e) {
-  let savedFile = null; // for cleanup if the sheet write fails
+  let savedFile = null;
+  let auditContext = {};
 
   try {
     const body = JSON.parse((e && e.postData && e.postData.contents) || '{}');
@@ -311,6 +350,7 @@ function doPost(e) {
     const store = String(body.store_name || '').trim();
     const submittedBy = String(body.submitted_by || email || '').trim();
     const mode = String(body.submission_mode || 'field_entry').trim();
+    auditContext={audit_id:String(body.audit_id||makeAuditId_()),email:email,store_name:store,submitted_by:submittedBy,issued_by:String(body.issued_by||submittedBy||email).trim(),submission_mode:mode,client_ip:String(body.client_ip||'').trim(),user_agent:String(body.user_agent||'').trim(),action:'UPLOAD/SUBMISSION'};
 
     const entryNo = String(body.entry_no || (
       'STK-' + Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyyMMdd-HHmmss') +
@@ -335,7 +375,8 @@ function doPost(e) {
       })
       .filter(function (r) { return r.total > 0; });
 
-    const prepared = prepareFile_(body.file, entryNo); // decode + check, NOT saved yet
+    const prepared = prepareFile_(body.file, entryNo);
+    auditContext.entry_no=entryNo; auditContext.file_name=body.file?String(body.file.file_name||body.file.name||''):''; auditContext.file_size_bytes=body.file?Number(body.file.size_bytes||0):0;
     const isPDF = !!prepared && prepared.type === 'PDF';
 
     if (!rows.length && !isPDF) return json_({ ok: false, error: 'Missing submission data' });
@@ -346,14 +387,14 @@ function doPost(e) {
 
       // Safe retry: same entry_no already saved -> don't duplicate
       if (body.entry_no && entryExists_(sh, entryNo)) {
-        // The Flask app checks saved_rows === rows sent, so report the same count.
-        return json_({ ok: true, duplicate: true, saved_rows: rows.length, entry_no: entryNo, submission_mode: mode });
+        const dup=writeAudit_(Object.assign({},auditContext,{status:'DUPLICATE',action:'DUPLICATE_RETRY',saved_rows:rows.length}));
+        return json_({ok:true,duplicate:true,saved_rows:rows.length,entry_no:entryNo,submission_mode:mode,audit_id:dup.audit_id,receipt_hash:dup.receipt_hash});
       }
 
       const now = new Date().toISOString();
       const saved = saveFile_(prepared);
       savedFile = saved.file;
-      const f = saved.info;
+      const f = saved.info; auditContext.file_name=f.file_name||auditContext.file_name; auditContext.file_type=f.file_type||''; auditContext.drive_file_id=f.drive_file_id||''; auditContext.drive_file_url=f.drive_file_url||''; auditContext.saved_rows=rows.length;
 
       if (isPDF) {
         const pdfSh = pdfSheet_();
@@ -375,7 +416,8 @@ function doPost(e) {
       }
 
       SpreadsheetApp.flush();
-      savedFile = null; // success: keep the file
+      const audit=writeAudit_(Object.assign({},auditContext,{status:'SUCCESS'}));
+      savedFile = null;
 
       return json_({
         ok: true,
@@ -385,17 +427,21 @@ function doPost(e) {
         file_name: f.file_name,
         file_type: f.file_type,
         drive_file_id: f.drive_file_id,
-        drive_file_url: f.drive_file_url
+        drive_file_url:f.drive_file_url, audit_id:audit.audit_id, receipt_hash:audit.receipt_hash
       });
     });
 
   } catch (err) {
+    auditContext.status='FAILED'; auditContext.error=String(err); writeAudit_(auditContext);
     // Sheet write failed after the file was saved -> remove the orphan
     if (savedFile) { try { savedFile.setTrashed(true); } catch (ignore) {} }
     return json_({ ok: false, error: String(err) });
   }
 }
 
+
+
+function backfillAuditOnce(){return withLock_(function(){const ash=auditSheet_(),existing={};const av=ash.getDataRange().getValues();if(av.length>1)av.slice(1).forEach(function(r){existing[String(r[0]||'')]=true;});const sh=sheet_(),v=sh.getDataRange().getValues(),g={};if(v.length>1)v.slice(1).forEach(function(r){const e=String(r[0]||'').trim();if(e&&!g[e])g[e]=r;});Object.keys(g).forEach(function(e){const r=g[e],id='LEGACY-'+e;if(!existing[id])writeAudit_({audit_id:id,event_at:r[1]||new Date().toISOString(),status:'SUCCESS',action:'LEGACY_BACKFILL',entry_no:e,email:r[2],store_name:r[3],submitted_by:r[9],issued_by:r[9],submission_mode:r[10]||'legacy',file_name:r[11],file_type:r[12],drive_file_id:r[13],drive_file_url:r[14]});});const ph=pdfSheet_(),pv=ph.getDataRange().getValues();if(pv.length>1)pv.slice(1).forEach(function(r,i){const id='LEGACY-PDF-'+(i+1);if(!existing[id])writeAudit_({audit_id:id,event_at:r[0]||new Date().toISOString(),status:'SUCCESS',action:'LEGACY_BACKFILL',email:r[1],store_name:r[2],submitted_by:r[7],issued_by:r[7],submission_mode:r[8]||'pdf_upload',file_name:r[3],file_type:r[4],drive_file_id:r[5],drive_file_url:r[6]});});return 'Historical audit backfill completed.';});}
 
 /* ---------- ONE-TIME SETUP ---------- */
 
@@ -404,6 +450,6 @@ function doPost(e) {
 function authorizeOnce() {
   getRootFolder_();
   sheet_();
-  pdfSheet_();
+  pdfSheet_(); auditSheet_();
   Logger.log('Authorized. Now: Deploy > Manage deployments > Edit > New version.');
 }
