@@ -9,7 +9,7 @@
         }
       ]
     },
-    "meenadasari123456@gmail.com": {
+    "mum01@reneecosmetics.in": {
       "shops": [
         {
           "code": "RENEE COSMETICS-SEAWOOD MALL",
@@ -127,6 +127,123 @@
         {
           "code": "-",
           "name": "Nihar",
+          "status": "Active"
+        }
+      ]
+    },
+    "priyaharihp24@gmail.com": {
+      "shops": [
+        {
+          "code": "RENEE COSMETICS - PROZONE MALL COIMBATORE",
+          "name": "Coimbatore Kiosk",
+          "status": "Active"
+        }
+      ]
+    },
+    "dehradun.kiosk@reneecosmetics.in": {
+      "shops": [
+        {
+          "code": "RENEE COSMETICS-DEHRADUN",
+          "name": "Dehradun Kiosk",
+          "status": "Active"
+        }
+      ]
+    },
+    "mumbai.airport@reneecosmetics.in": {
+      "shops": [
+        {
+          "code": "-",
+          "name": "Mumbai T-2",
+          "status": "Active"
+        }
+      ]
+    },
+    "pune.kiosk@reneecosmetics.in": {
+      "shops": [
+        {
+          "code": "RENEE COSMETICS-PUNE GRAND HIGHSTREET",
+          "name": "Pune Kiosk",
+          "status": "Active"
+        }
+      ]
+    },
+    "faridabad.kiosk@reneecosmetics.in": {
+      "shops": [
+        {
+          "code": "RENEE COSMETICS-MALL OF FARIDABAD",
+          "name": "Faridabad Kiosk",
+          "status": "Active"
+        }
+      ]
+    },
+    "bhopal.kiosk@reneecosmetics.in": {
+      "shops": [
+        {
+          "code": "RENEE COSMETICS-DB MALL",
+          "name": "Bhopal Kiosk",
+          "status": "Active"
+        }
+      ]
+    },
+    "ranchi.kiosk@reneecosmetics.in": {
+      "shops": [
+        {
+          "code": "RENEE COSMETICS RANCHI",
+          "name": "Ranchi Kiosk",
+          "status": "Active"
+        }
+      ]
+    },
+    "siliguri.kiosk@reneecosmetics.in": {
+      "shops": [
+        {
+          "code": "RENEE COSMETICS SILIGURI",
+          "name": "Siliguri Kiosk",
+          "status": "Active"
+        }
+      ]
+    },
+    "raipur.kiosk@reneecosmetics.in": {
+      "shops": [
+        {
+          "code": "RENEE COSMETICS-AMBUJA CITY RAIPUR",
+          "name": "Raipur Kiosk",
+          "status": "Active"
+        }
+      ]
+    },
+    "mantribangalore.kiosk@reneecosmetics.in": {
+      "shops": [
+        {
+          "code": "RENEE COSMETICS  MANTRI SQUARE MALL",
+          "name": "Mantri Mall Bangalore",
+          "status": "Active"
+        }
+      ]
+    },
+    "muzaffarpur.kiosk@reneecosmetics.in": {
+      "shops": [
+        {
+          "code": "RENEE COSMETICS MUZAFFARPUR",
+          "name": "P&M Mall,Muzaffarpur",
+          "status": "Active"
+        }
+      ]
+    },
+    "ludhiana.kiosk@reneecosmetics.in": {
+      "shops": [
+        {
+          "code": "MBD MALL LUDHIANA",
+          "name": "MBD Mall, Ludhiana",
+          "status": "Active"
+        }
+      ]
+    },
+    "ahmedabad.kiosk@reneecosmetics.in": {
+      "shops": [
+        {
+          "code": "RENEE - ALPHA ONE MALL",
+          "name": "Alpha OneAhmedabad",
           "status": "Active"
         }
       ]
