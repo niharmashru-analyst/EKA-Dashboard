@@ -179,6 +179,12 @@
       "password": "Renee@2026",
       "access": ["stock_entry"],
       "status": "Active"
+    },
+    "mumbai.vashi@reneecosmetics.in": {
+      "name": "",
+      "password": "Renee@2026",
+      "access": ["stock_entry"],
+      "status": "Active"
     }
   }
 }
