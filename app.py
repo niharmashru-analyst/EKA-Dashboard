@@ -1504,7 +1504,7 @@ def _admin_build_submission(file_storage, email, store, ean_header, stock_header
     cleaned=list(agg.values())
     entry_no=str(entry_no or "").strip() or ("STK-"+datetime.now().strftime("%Y%m%d-%H%M%S")+"-"+secrets.token_hex(2).upper())
     actor=str(issued_by or session.get("user_email") or "admin").strip().lower()
-    payload={"entry_no":entry_no,"email":email,"store_name":store,"rows":cleaned,"submitted_by":actor,"issued_by":actor,"audit_id":"AUD-"+datetime.now().strftime("%Y%m%d-%H%M%S")+"-"+secrets.token_hex(4).upper(),"client_ip":request.headers.get("X-Forwarded-For",request.remote_addr or "").split(",")[0].strip(),"user_agent":request.headers.get("User-Agent","")[:500],"submission_mode":"admin_upload"}
+    payload={"entry_no":entry_no,"email":email,"store_name":store,"rows":cleaned,"submitted_by":actor,"issued_by":actor,"audit_id":"AUD-"+datetime.now().strftime("%Y%m%d-%H%M%S")+"-"+secrets.token_hex(4).upper(),"client_ip":request.headers.get("X-Forwarded-For",request.remote_addr or "").split(",")[0].strip(),"user_agent":request.headers.get("User-Agent","")[:500],"submission_mode":"admin_upload","ean_column":str(ean_header or ""),"stock_column":str(stock_header or ""),"tester_column":str(tester_header or "")}
     if original_file:
         payload["file"] = original_file
     if SUBMISSION_API_URL:
@@ -1844,7 +1844,7 @@ def manual_upload_preview():
         payload=_verify_upload_token(token) if token else _master_upload_identity(request.form.get("email"),request.form.get("store"))
         if not payload:return jsonify({"ok":False,"error":"This upload link is invalid or expired."}),403
         df=_read_upload_excel(request.files.get("file")); headers=[str(x) for x in df.columns]
-        return jsonify({"ok":True,"headers":headers,"rows":int(len(df)),"suggestions":{"ean":_header_auto(headers,["ean","ean code","sku code","barcode","barcode no","product code"]),"stock":_header_auto(headers,["stock","stock qty","quantity","qty","physical stock"]),"tester":_header_auto(headers,["tester","tester qty","tester quantity"])}})
+        return jsonify({"ok":True,"headers":headers,"rows":int(len(df)),"suggestions":{"ean":_header_auto(headers,["ean","ean code","ean no","ean number","ean13","ean 13","gtin","gtin13","barcode","barcode no","barcode number","product barcode","item barcode","sku code","sku no","product code"]),"stock":_header_auto(headers,["stock","stock qty","stock quantity","stock count","stock units","qty","quantity","quantity available","qty available","stock on hand","on hand","closing stock","physical stock","actual stock","current stock","available stock","balance qty","inventory","units","pieces","pcs","saleable stock"]),"tester":_header_auto(headers,["tester","testers","tester qty","tester quantity","testers qty","tester stock","tester stock qty","tester count","tester units","tester pcs"])}})
     except Exception as e:return jsonify({"ok":False,"error":str(e)}),400
 
 

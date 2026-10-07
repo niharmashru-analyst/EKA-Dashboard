@@ -159,7 +159,7 @@ async function loadSku() {
   try {
     const j=await getJson('/api/entry-meta?email='+encodeURIComponent(email)+'&store='+encodeURIComponent(selectedStore)+'&_ts='+Date.now());
     master=j.master_skus||master; const available=j.available_skus||[];
-    rows=available.map(x=>({uid:uidSeed++,ean:String(x['EAN Code']??'').trim(),name:String(x['Product Name']??''),stock:0,tester:0})); entrySearch=''; currentPage=1; entryStep=2;
+    rows=available.map(x=>({uid:uidSeed++,ean:String(x['EAN Code']??'').trim(),name:String(x['Product Name']??''),stock:0,tester:0,added:false})); entrySearch=''; currentPage=1; entryStep=2;
     $('setupActions').style.display='none'; $('email').disabled=true; $('store').disabled=true;
     setEntryLoading(true,'Loading SKU Entry',`${rows.length.toLocaleString('en-IN')} SKU(s) found. Building the entry table…`);
     render(); msg(`${rows.length.toLocaleString('en-IN')} SKU(s) loaded for ${selectedStore}.`,true);
@@ -169,8 +169,15 @@ async function loadSku() {
 
 function filteredRows() {
   const q = String(entrySearch || '').trim().toLowerCase();
-  if (!q) return rows.slice();
-  return rows.filter(r => String(r.ean || '').toLowerCase().includes(q) || String(r.name || '').toLowerCase().includes(q));
+  const base = rows.filter(r => !r.added);
+  if (!q) return base.slice();
+  return base.filter(r => String(r.ean || '').toLowerCase().includes(q) || String(r.name || '').toLowerCase().includes(q));
+}
+function filteredAddedRows() {
+  const q = String(entrySearch || '').trim().toLowerCase();
+  const added = rows.filter(r => r.added);
+  if (!q) return added.slice();
+  return added.filter(r => String(r.ean || '').toLowerCase().includes(q) || String(r.name || '').toLowerCase().includes(q));
 }
 
 function sortRowsByTotal() {
@@ -276,6 +283,26 @@ function render() {
       </article>`; }).join('')}
       ${visible.length ? '' : `<div class="entry-mobile-empty">No SKU matches your search.</div>`}
     </div>
+    ${(() => {
+      const added = filteredAddedRows();
+      if (!added.length) return '';
+      return `<section class="added-sku-section" id="addedSkuSection">
+        <button type="button" class="added-sku-header" id="toggleAddedSkus" aria-expanded="true">
+          <span><b>Added SKUs</b><small>${added.length} SKU(s) added from Master</small></span><strong id="addedSkuChevron">⌃</strong>
+        </button>
+        <div class="added-sku-list" id="addedSkuList">
+          ${added.map(r => {
+            const total=Number(r.stock||0)+Number(r.tester||0);
+            return `<article class="added-sku-item" data-added-uid="${r.uid}">
+              <button type="button" class="added-sku-item-head" data-toggle-added="${r.uid}"><span><b>${esc(r.name||'Unnamed Product')}</b><small>${esc(r.ean||'—')} • Total ${total}</small></span><strong>⌄</strong></button>
+              <div class="added-sku-item-body" id="added-body-${r.uid}">
+                <div class="added-sku-inputs"><label>Stock<input class="entry-num" data-uid="${r.uid}" data-k="stock" type="number" min="0" step="1" value="${Number(r.stock||0)}"></label><label>Tester<input class="entry-num" data-uid="${r.uid}" data-k="tester" type="number" min="0" step="1" value="${Number(r.tester||0)}"></label><span class="added-total">Total <b id="added-tot-${r.uid}">${total}</b></span></div>
+              </div>
+            </article>`;
+          }).join('')}
+        </div>
+      </section>`;
+    })()}
     <div class="entry-pagination">
       <button class="btn secondary small" id="prevPage" ${currentPage <= 1 ? 'disabled' : ''}>← Previous</button>
       <span>Page <b>${currentPage}</b> of <b>${pages}</b></span>
@@ -332,6 +359,13 @@ function render() {
   $('masterSearch').oninput = renderMasterResults;
   $('prevPage').onclick = () => { if (currentPage > 1) { currentPage--; render(); } };
   $('nextPage').onclick = () => { if (currentPage < pages) { currentPage++; render(); } };
+  $('toggleAddedSkus')?.addEventListener('click',()=>{
+    const list=$('addedSkuList'), chevron=$('addedSkuChevron'), btn=$('toggleAddedSkus');
+    const open=!list.classList.contains('collapsed'); list.classList.toggle('collapsed',open); btn.setAttribute('aria-expanded',String(!open)); if(chevron) chevron.textContent=open?'⌄':'⌃';
+  });
+  document.querySelectorAll('[data-toggle-added]').forEach(b=>b.addEventListener('click',()=>{
+    const body=$('added-body-'+b.dataset.toggleAdded); if(!body)return; const closed=body.classList.toggle('collapsed'); b.querySelector('strong').textContent=closed?'⌄':'⌃';
+  }));
   $('submitEntryTop').onclick = submitAll;
   renderMasterResults();
   updateSummary();
@@ -364,8 +398,8 @@ function addMasterSku(ean) {
   const found = master.find(m => String(m['EAN Code']).trim() === String(ean).trim());
   if (!found) return;
   if (rows.some(r => String(r.ean).trim() === String(ean).trim())) { msg('SKU is already in the table.'); return; }
-  rows.push({ uid:uidSeed++, ean: String(found['EAN Code']).trim(), name: String(found['Product Name'] || ''), stock: 0, tester: 0 });
-  currentPage = Math.ceil(rows.length / PAGE_SIZE);
+  rows.push({ uid:uidSeed++, ean: String(found['EAN Code']).trim(), name: String(found['Product Name'] || ''), stock: 0, tester: 0, added:true });
+  currentPage = 1;
   render();
   msg(`${found['Product Name']} added from SKU Master.`, true);
 }
@@ -639,7 +673,7 @@ showSetup();
   const navs=document.querySelectorAll('.sidebar .nav[data-page]');
   const pages={stock:document.getElementById('page-stock'),inward:document.getElementById('page-inward'),dashboard:document.getElementById('page-dashboard')};
   function openPage(name){
-    if(name==='inward') return;
+    if(name==='inward' && !document.querySelector('.sidebar .nav[data-page="inward"]:not([disabled])')) return;
     Object.keys(pages).forEach(k=>{if(pages[k]) pages[k].classList.toggle('hidden',k!==name);});
     navs.forEach(n=>n.classList.toggle('active',n.dataset.page===name));
   }

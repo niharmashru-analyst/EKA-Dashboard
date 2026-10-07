@@ -44,7 +44,7 @@ const AUDIT_HEADERS = [
   'audit_id', 'event_at', 'status', 'action', 'entry_no', 'email', 'store_name',
   'submitted_by', 'issued_by', 'submission_mode', 'file_name', 'file_type',
   'file_size_bytes', 'saved_rows', 'client_ip', 'user_agent', 'drive_file_id',
-  'drive_file_url', 'error', 'receipt_hash'
+  'drive_file_url', 'error', 'receipt_hash', 'ean_column', 'stock_column', 'tester_column'
 ];
 
 const PDF_HEADERS = [
@@ -295,7 +295,7 @@ function writeAudit_(a) {
   try {
     const sh=auditSheet_(), eventAt=a.event_at||new Date().toISOString(), auditId=a.audit_id||makeAuditId_();
     const receipt=a.receipt_hash||hashReceipt_(auditId,a.entry_no||'',a.email||'',a.store_name||'',a.file_name||'',eventAt);
-    writeRows_(sh,[[auditId,eventAt,a.status||'SUCCESS',a.action||'SUBMISSION',a.entry_no||'',a.email||'',a.store_name||'',a.submitted_by||'',a.issued_by||'',a.submission_mode||'',a.file_name||'',a.file_type||'',num_(a.file_size_bytes),num_(a.saved_rows),a.client_ip||'',a.user_agent||'',a.drive_file_id||'',a.drive_file_url||'',a.error||'',receipt]],[1,2,3,4,5,6,7,8,9,10,11,12,15,16,17,18,19,20]);
+    writeRows_(sh,[[auditId,eventAt,a.status||'SUCCESS',a.action||'SUBMISSION',a.entry_no||'',a.email||'',a.store_name||'',a.submitted_by||'',a.issued_by||'',a.submission_mode||'',a.file_name||'',a.file_type||'',num_(a.file_size_bytes),num_(a.saved_rows),a.client_ip||'',a.user_agent||'',a.drive_file_id||'',a.drive_file_url||'',a.error||'',receipt,a.ean_column||'',a.stock_column||'',a.tester_column||'']],[1,2,3,4,5,6,7,8,9,10,11,12,15,16,17,18,19,20,21,22,23]);
     SpreadsheetApp.flush(); return {audit_id:auditId,receipt_hash:receipt};
   } catch(err) { console.error('Audit write failed: '+err); return {audit_id:a.audit_id||'',receipt_hash:''}; }
 }
@@ -350,7 +350,7 @@ function doPost(e) {
     const store = String(body.store_name || '').trim();
     const submittedBy = String(body.submitted_by || email || '').trim();
     const mode = String(body.submission_mode || 'field_entry').trim();
-    auditContext={audit_id:String(body.audit_id||makeAuditId_()),email:email,store_name:store,submitted_by:submittedBy,issued_by:String(body.issued_by||submittedBy||email).trim(),submission_mode:mode,client_ip:String(body.client_ip||'').trim(),user_agent:String(body.user_agent||'').trim(),action:'UPLOAD/SUBMISSION'};
+    auditContext={audit_id:String(body.audit_id||makeAuditId_()),email:email,store_name:store,submitted_by:submittedBy,issued_by:String(body.issued_by||submittedBy||email).trim(),submission_mode:mode,client_ip:String(body.client_ip||'').trim(),user_agent:String(body.user_agent||'').trim(),ean_column:String(body.ean_column||'').trim(),stock_column:String(body.stock_column||'').trim(),tester_column:String(body.tester_column||'').trim(),action:'UPLOAD/SUBMISSION'};
 
     const entryNo = String(body.entry_no || (
       'STK-' + Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyyMMdd-HHmmss') +
