@@ -324,6 +324,12 @@ function doGet(e) {
       const limit=Math.max(1,Math.min(Number(params.limit||500),1000)); records.reverse();
       return json_({ok:true,records:records.slice(0,limit)});
     }
+    if(String(params.view||'').toLowerCase()==='variance_cases'){
+      const vsh=varianceCasesSheet_(); const vv=vsh.getDataRange().getValues();
+      const vh=VARIANCE_CASE_HEADERS; let records=vv.length<2?[]:vv.slice(1).map(function(r){const o={};vh.forEach(function(h,i){o[h]=(r[i]===undefined||r[i]===null)?'':r[i];});return o;});
+      records.reverse(); const limit=Math.max(1,Math.min(Number(params.limit||1000),2000));
+      return json_({ok:true,records:records.slice(0,limit)});
+    }
     const values = sh.getDataRange().getValues();
     if (values.length < 2) return json_({ ok: true, records: [] });
     const records = values.slice(1).map(function (r) {
@@ -345,6 +351,7 @@ function doPost(e) {
   try {
     const body = JSON.parse((e && e.postData && e.postData.contents) || '{}');
     if (!check_(body.secret)) return json_({ ok: false, error: 'Unauthorized' });
+    if(String(body.kind||'').toLowerCase()==='variance_case') return handleVarianceCase_(body);
 
     const email = String(body.email || '').trim();
     const store = String(body.store_name || '').trim();
@@ -453,3 +460,41 @@ function authorizeOnce() {
   pdfSheet_(); auditSheet_();
   Logger.log('Authorized. Now: Deploy > Manage deployments > Edit > New version.');
 }
+
+
+/* ---------- VARIANCE WORKFLOW ---------- */
+const VARIANCE_CASE_HEADERS = ['case_id','created_at','updated_at','email','store_name','ean_code','product_name','stage','system_stock','derived_stock','physical_stock','updated_stock','remarks','status','actor','timeline_json'];
+function varianceCasesSheet_(){
+  const ss=getSpreadsheet_(); let sh=ss.getSheetByName('Variance Cases');
+  if(!sh){sh=ss.insertSheet('Variance Cases');sh.getRange(1,1,1,VARIANCE_CASE_HEADERS.length).setValues([VARIANCE_CASE_HEADERS]);}
+  const current=sh.getRange(1,1,1,Math.max(sh.getLastColumn(),VARIANCE_CASE_HEADERS.length)).getDisplayValues()[0].map(String);
+  if(current[0]!=='case_id'){sh.insertRowBefore(1);sh.getRange(1,1,1,VARIANCE_CASE_HEADERS.length).setValues([VARIANCE_CASE_HEADERS]);}
+  else VARIANCE_CASE_HEADERS.forEach(function(h,i){if(current[i]!==h)sh.getRange(1,i+1).setValue(h);});
+  return sh;
+}
+function handleVarianceCase_(body){
+  return withLock_(function(){
+    const sh=varianceCasesSheet_(), now=new Date().toISOString(), action=String(body.action||'create').toLowerCase();
+    const values=sh.getDataRange().getValues(), headers=VARIANCE_CASE_HEADERS;
+    if(action==='create'){
+      const id=String(body.case_id||('VAR-'+Utilities.getUuid().slice(0,10).toUpperCase()));
+      if(values.slice(1).some(function(r){return String(r[0])===id;})) return json_({ok:true,duplicate:true,case_id:id});
+      const timeline=[{at:now,actor:String(body.actor||body.email||''),action:'SUBMITTED',remarks:String(body.remarks||'')}];
+      const row=[id,now,now,String(body.email||''),String(body.store_name||''),String(body.ean_code||''),String(body.product_name||''),String(body.stage||'stage2'),num_(body.system_stock),num_(body.derived_stock),num_(body.physical_stock),num_(body.updated_stock),String(body.remarks||''),'Pending HOD',String(body.actor||body.email||''),JSON.stringify(timeline)];
+      sh.appendRow(row); return json_({ok:true,message:'Variance submitted for HOD approval.',case_id:id,case:caseRow_(row)});
+    }
+    const id=String(body.case_id||''); let rowIndex=-1,row=null;
+    for(let i=1;i<values.length;i++){if(String(values[i][0])===id){rowIndex=i+1;row=values[i];break;}}
+    if(!row)return json_({ok:false,error:'Variance case not found.'});
+    if(String(row[13])!=='Pending HOD')return json_({ok:false,error:'This case has already been actioned.'});
+    if(action!=='approve'&&action!=='reject')return json_({ok:false,error:'Unknown variance action.'});
+    const timeline=(()=>{try{return JSON.parse(String(row[15]||'[]'));}catch(e){return [];}})();
+    const remarks=String(body.remarks||'').trim();
+    timeline.push({at:now,actor:String(body.actor||''),action:action==='approve'?'APPROVED':'REJECTED',remarks:remarks});
+    sh.getRange(rowIndex,3).setValue(now); sh.getRange(rowIndex,14).setValue(action==='approve'?'Approved':'Rejected'); sh.getRange(rowIndex,15).setValue(String(body.actor||'')); sh.getRange(rowIndex,16).setValue(JSON.stringify(timeline));
+    if(remarks)sh.getRange(rowIndex,13).setValue(String(row[12]||'')+'\nHOD: '+remarks);
+    row=sh.getRange(rowIndex,1,1,VARIANCE_CASE_HEADERS.length).getValues()[0];
+    return json_({ok:true,message:'Variance '+(action==='approve'?'approved.':'rejected.'),case_id:id,case:caseRow_(row)});
+  });
+}
+function caseRow_(r){const o={};VARIANCE_CASE_HEADERS.forEach(function(h,i){o[h]=r[i]===undefined?'':r[i];});return o;}

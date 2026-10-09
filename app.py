@@ -4,7 +4,7 @@ from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from datetime import datetime, timezone
 import requests
 import pandas as pd
-import re
+import re, uuid
 from flask import Flask, jsonify, render_template, request, Response, session, redirect, send_file, make_response
 
 app = Flask(__name__)
@@ -118,6 +118,7 @@ MAPPING_JSON_SOURCE = os.getenv("MAPPING_JSON_SOURCE", "local").strip().lower()
 MAPPING_CACHE_SECONDS = int(os.getenv("MAPPING_CACHE_SECONDS", "900"))
 SUBMISSION_API_URL = os.getenv("SUBMISSION_API_URL", "").strip()
 SUBMISSION_API_SECRET = os.getenv("SUBMISSION_API_SECRET", "").strip()
+HOD_EMAIL = os.getenv("HOD_EMAIL", "").strip().lower()
 DATABASE_PATH = os.getenv("DATABASE_PATH", os.path.join(app.root_path, "data", "submissions.db"))
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
@@ -1963,6 +1964,100 @@ def _as_of(ts):
 @app.get("/healthz")
 def healthz():
     return jsonify({"ok": True, "stock_loaded": _cache.get("stock_df") is not None, "ts": int(time.time())})
+
+
+def _variance_case_records():
+    if not SUBMISSION_API_URL:
+        raise RuntimeError("Persistent variance workflow is not configured. Update the Google Apps Script deployment first.")
+    result = remote_request("GET", query={"view": "variance_cases", "limit": "1000"}) or {}
+    if not result.get("ok"):
+        raise RuntimeError(result.get("error", "Could not load variance cases."))
+    return result.get("records", []) or []
+
+
+def _variance_actor():
+    return str(session.get("user_email", "")).strip().lower()
+
+
+def require_variance_access(fn):
+    @functools.wraps(fn)
+    def wrapped(*args, **kwargs):
+        email=_variance_actor()
+        if not email:
+            if request.path.startswith("/api/"): return jsonify({"ok":False,"error":"Authentication required."}),401
+            return redirect("/login?next="+request.path)
+        if not (session.get("is_admin") or (HOD_EMAIL and email==HOD_EMAIL) or _has_access("stock_entry")):
+            if request.path.startswith("/api/"): return jsonify({"ok":False,"error":"You do not have access to the variance workflow."}),403
+            return render_template("access_denied.html",page="stock variance"),403
+        return fn(*args, **kwargs)
+    return wrapped
+
+
+@app.get("/variance-workflow")
+@require_variance_access
+def variance_workflow_page():
+    return render_template("variance_workflow.html", user_email=_variance_actor(), is_admin=bool(session.get("is_admin")), is_hod=bool(HOD_EMAIL and _variance_actor()==HOD_EMAIL))
+
+
+@app.get("/api/variance-workflow/data")
+@require_variance_access
+def variance_workflow_data():
+    try:
+        email=_variance_actor(); is_admin=bool(session.get("is_admin")); is_hod=bool(HOD_EMAIL and email==HOD_EMAIL)
+        var=load_variance(False, copy=True); stock=load_stock(False, copy=True)
+        merged=merge_variance_actuals(var,stock)
+        for c in ["Opening Stock Qty","Inward Qty","Tertiary Qty","System Stock Qty","Actual Closing Qty"]:
+            if c not in merged.columns: merged[c]=0
+        merged["Stage 1 Derived Stock"] = (pd.to_numeric(merged["Inward Qty"],errors="coerce").fillna(0) + pd.to_numeric(merged["Opening Stock Qty"],errors="coerce").fillna(0) - pd.to_numeric(merged["Tertiary Qty"],errors="coerce").fillna(0))
+        merged["Stage 1 Variance"] = merged["Stage 1 Derived Stock"] - pd.to_numeric(merged["System Stock Qty"],errors="coerce").fillna(0)
+        merged["Stage 2 Variance"] = pd.to_numeric(merged["Actual Closing Qty"],errors="coerce") - pd.to_numeric(merged["System Stock Qty"],errors="coerce").fillna(0)
+        if not is_admin and not is_hod:
+            mp=load_mapping(False)
+            if mp is None or mp.empty or "Email ID" not in mp.columns or "Store Name" not in mp.columns: return jsonify({"ok":True,"rows":[],"cases":[],"role":"user"})
+            shops=set(mp.loc[mp["Email ID"].astype(str).str.strip().str.lower()==email,"Store Name"].astype(str).str.strip())
+            merged=merged[merged["Store Name"].astype(str).str.strip().isin(shops)]
+        rows=json_records(merged.fillna(""))
+        cases=_variance_case_records()
+        if not is_admin and not is_hod:
+            shops=set(merged["Store Name"].astype(str).str.strip())
+            cases=[c for c in cases if str(c.get("email","")).strip().lower()==email or str(c.get("store_name","")).strip() in shops]
+        return jsonify({"ok":True,"rows":rows,"cases":cases,"role":"admin" if is_admin else ("hod" if is_hod else "user"),"hod_configured":bool(HOD_EMAIL),"source":_cache.get("var_source",""),"as_of":_as_of(_cache.get("var_ts"))})
+    except Exception as e:
+        app.logger.exception("Variance workflow data failed")
+        return jsonify({"ok":False,"error":str(e)}),502
+
+
+@app.post("/api/variance-workflow/case")
+@require_variance_access
+def variance_workflow_case():
+    try:
+        p=request.get_json(silent=True) or {}; action=str(p.get("action","create")).strip().lower()
+        email=_variance_actor(); is_admin=bool(session.get("is_admin")); is_hod=bool(HOD_EMAIL and email==HOD_EMAIL)
+        if action in {"approve","reject"}:
+            if not is_hod: return jsonify({"ok":False,"error":"Only the configured HOD can approve or reject variance cases."}),403
+            case_id=str(p.get("case_id","")).strip()
+            if not case_id:return jsonify({"ok":False,"error":"Case ID is required."}),400
+            payload={"kind":"variance_case","action":action,"case_id":case_id,"actor":email,"remarks":str(p.get("remarks","")).strip()[:2000]}
+        elif action=="create":
+            if is_admin: return jsonify({"ok":False,"error":"Admin can monitor cases but cannot raise/approve them on behalf of a field user here."}),403
+            case_id="VAR-"+datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")+"-"+uuid.uuid4().hex[:5].upper()
+            store=str(p.get("store_name","")).strip(); ean=str(p.get("ean_code","")).strip(); stage=str(p.get("stage","stage2")).strip().lower(); remarks=str(p.get("remarks","")).strip(); updated=p.get("updated_stock")
+            if not store or not ean or not remarks or updated is None:return jsonify({"ok":False,"error":"Store, EAN, updated stock and remarks are required."}),400
+            try: updated=float(updated)
+            except Exception:return jsonify({"ok":False,"error":"Updated stock must be numeric."}),400
+            if updated<0 or updated>10000000:return jsonify({"ok":False,"error":"Updated stock is outside the allowed range."}),400
+            mp=load_mapping(False)
+            if not is_hod:
+                allowed=set(mp.loc[mp["Email ID"].astype(str).str.strip().str.lower()==email,"Store Name"].astype(str).str.strip()) if mp is not None and not mp.empty and "Email ID" in mp.columns and "Store Name" in mp.columns else set()
+                if store not in allowed:return jsonify({"ok":False,"error":"You are not mapped to this shop."}),403
+            payload={"kind":"variance_case","action":"create","case_id":case_id,"email":email,"store_name":store,"ean_code":ean,"product_name":str(p.get("product_name","")).strip(),"stage":stage,"system_stock":p.get("system_stock",0),"derived_stock":p.get("derived_stock",0),"physical_stock":p.get("physical_stock",0),"updated_stock":updated,"remarks":remarks,"actor":email}
+        else:return jsonify({"ok":False,"error":"Unknown action."}),400
+        result=remote_request("POST",payload) or {}
+        if not result.get("ok"):return jsonify({"ok":False,"error":result.get("error","Variance service rejected the request.")}),502
+        return jsonify({"ok":True,"message":result.get("message","Variance case updated."),"case":result.get("case",{}),"case_id":result.get("case_id",payload.get("case_id"))})
+    except Exception as e:
+        app.logger.exception("Variance case action failed")
+        return jsonify({"ok":False,"error":str(e)}),502
 
 
 @app.get("/api/data")
