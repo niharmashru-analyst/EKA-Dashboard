@@ -1,0 +1,11 @@
+/* Theme support. The app is designed dark; the light theme re-colours the whole page by inverting it and
+   rotating the hue back, then un-inverting media so photos, the logo and the camera stay natural. */
+html[data-theme="light"]{filter:invert(1) hue-rotate(180deg);color-scheme:light}
+html[data-theme="light"] img,html[data-theme="light"] video,html[data-theme="light"] .keep-colors{filter:invert(1) hue-rotate(180deg)}
+html[data-theme="dark"]{color-scheme:dark}
+.theme-toggle{font:700 11px/1 Manrope,Arial,sans-serif;letter-spacing:.02em;padding:8px 11px;border-radius:999px;border:1px solid #333;background:#141414;color:#f1f1f1;cursor:pointer;white-space:nowrap;min-height:34px}
+.theme-toggle:hover{border-color:#ff2b8a}
+.theme-toggle.in-side{display:block;margin:12px 14px 0;width:calc(100% - 28px);text-align:left}
+.theme-toggle.in-bar{margin-right:8px;flex:0 0 auto}
+.theme-toggle.floating{position:fixed;top:12px;right:12px;z-index:900}
+@media(max-width:700px){.theme-toggle{padding:7px 9px;font-size:10px}}
