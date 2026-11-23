@@ -1,12 +1,12 @@
 /* Shared by /reports and /sales */
-.xw{max-width:1180px;margin:0 auto;padding:22px 16px 60px;font-family:Inter,Arial,sans-serif}
+.xw{max-width:1180px;margin:0 auto;padding:22px 16px 60px;font-family:Manrope,Arial,sans-serif}
 .xw-top{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:16px}
-.xw-top h1{font:800 24px Inter,sans-serif;margin:0;flex:1 1 200px}
+.xw-top h1{font:800 24px 'Plus Jakarta Sans',sans-serif;margin:0;flex:1 1 200px}
 .xw-top a.btn,.xw .btn{text-decoration:none;display:inline-block;cursor:pointer;border-radius:10px;padding:10px 14px;font-weight:800;font-size:13px;border:1px solid #ff2b8a;background:#ff2b8a;color:#fff}
 .xw .btn.secondary{background:#111;color:#ff72b4;border-color:#333}
 .xw .btn[disabled]{opacity:.45;cursor:not-allowed}
 .xc{background:#111;border:1px solid #272727;border-radius:16px;padding:16px;margin-bottom:14px}
-.xc h2{font:800 15px Inter,sans-serif;margin:0 0 10px}
+.xc h2{font:800 15px 'Plus Jakarta Sans',sans-serif;margin:0 0 10px}
 .xw label.l{display:block;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:#8e8e97;font-weight:800;margin:0 0 5px}
 .xw input[type=text],.xw input[type=date],.xw input[type=search],.xw select{width:100%;min-height:42px;border-radius:10px;border:1px solid #2c2c2c;background:#0b0b0b;color:#f7f7f7;padding:8px 10px;font-size:14px}
 .xrow{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}
@@ -23,7 +23,7 @@
 .xmsg{padding:10px 12px;border-radius:10px;font-size:13px;margin:8px 0}.xmsg.bad{background:rgba(255,91,110,.1);color:#ff8c99}.xmsg.good{background:rgba(66,211,146,.1);color:#42d392}
 .kp{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px}
 .kp>div{background:#111;border:1px solid #272727;border-radius:14px;padding:14px}
-.kp span{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:#8e8e97;font-weight:800}.kp b{display:block;font:800 22px Inter,sans-serif;margin-top:6px}.kp small{color:#8e8e97}
+.kp span{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:#8e8e97;font-weight:800}.kp b{display:block;font:800 22px 'Plus Jakarta Sans',sans-serif;margin-top:6px}.kp small{color:#8e8e97}
 .tw{overflow:auto;border:1px solid #232323;border-radius:12px;max-height:560px}
 .tw table{border-collapse:collapse;width:100%;min-width:640px;font-size:13px}.tw th{position:sticky;top:0;background:#151515;color:#8e8e97;font-size:10px;text-transform:uppercase;letter-spacing:.08em;text-align:left;padding:10px;white-space:nowrap}
 .tw td{padding:10px;border-top:1px solid #1b1b1b;white-space:nowrap}.tw td.n,.tw th.n{text-align:right;font-variant-numeric:tabular-nums}

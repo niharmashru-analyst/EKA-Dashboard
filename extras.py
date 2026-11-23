@@ -27,15 +27,6 @@ def _canon(s):
     return re.sub(r"[^a-z0-9]+", "", str(s or "").lower())
 
 
-def _okey(s):
-    """Outlet match key: 'RENEE - AHMEDABAD EBO', 'Ahmedabad EBO' and 'Delhi T2' / 'Delhi T-2' compare equal;
-    a leading RENEE brand and a trailing KIOSK are ignored (ZED is a different brand and is kept)."""
-    k = _canon(s)
-    if k.startswith("renee"): k = k[5:]
-    if k.endswith("kiosk") and len(k) > 5: k = k[:-5]
-    return k
-
-
 def _ean_key(s):
     """EAN-13 and UPC-A differ only by a leading zero; compare on the digits without leading zeros."""
     return re.sub(r"\D", "", str(s or "")).lstrip("0")
@@ -304,27 +295,17 @@ def register(A):
     #    Outlet logins see only their mapped outlet(s); admin / "dashboard" logins see every outlet.
     # ======================================================================
     ALIASES = {
-        "outlet": ["outlet", "name", "outletname", "store", "storename", "shop", "shopname", "branch", "branchname", "location", "outletcode", "storecode", "shopcode"],
-        "ean": ["productcode", "eancode", "ean", "sku", "skucode", "barcode", "itemcode", "articlecode", "article", "material", "materialcode"],
+        "outlet": ["outlet", "outletname", "store", "storename", "shop", "shopname", "branch", "branchname", "location", "outletcode", "storecode", "shopcode"],
+        "ean": ["eancode", "ean", "sku", "skucode", "barcode", "itemcode", "articlecode", "article", "material", "materialcode"],
         "product": ["productname", "product", "skuname", "itemname", "itemdescription", "description", "articlename", "materialdescription"],
-        "qty": ["qtysold", "qty", "quantity", "salesqty", "soldqty", "saleqty", "unitssold", "units", "netqty", "netsalesqty", "salesunits"],
-        "value": ["mrpsales", "netsales", "salesvalue", "salevalue", "value", "amount", "salesamount", "netvalue", "netsalesvalue", "revenue", "salesinr", "netamount", "netsalesamount"],
+        "qty": ["qty", "quantity", "salesqty", "soldqty", "saleqty", "unitssold", "units", "netqty", "netsalesqty", "salesunits"],
+        "value": ["netsales", "salesvalue", "salevalue", "value", "amount", "salesamount", "netvalue", "netsalesvalue", "revenue", "salesinr", "netamount", "netsalesamount"],
         "target": ["target", "salestarget", "monthlytarget", "targetvalue", "targetamount", "targetinr", "mtdtarget", "monthtarget"],
         "ach": ["achievement", "achieved", "actual", "actualsales", "achievementvalue", "achvalue", "ach", "mtdachievement", "mtdsales", "mtdactual"],
         "period": ["month", "period", "monthyear", "salesmonth", "date", "salesdate", "billdate", "invoicedate", "monthname"],
         "region": ["region", "city", "zone", "area"],
     }
     _sales = {"sig": None, "ts": 0.0, "data": None, "lock": threading.Lock(), "source": ""}
-
-    def _link_file():
-        return os.path.join(os.path.dirname(_sales_path()) if SALES_FILE else os.path.join(app.root_path, "data"), "sales_link.json")
-
-    def _sales_url():
-        """Env SALES_EXCEL_URL wins; otherwise the SharePoint / OneDrive / Drive link an admin saved in the Admin page."""
-        if SALES_EXCEL_URL: return SALES_EXCEL_URL
-        try:
-            with open(_link_file(), encoding="utf-8") as f: return str(json.load(f).get("url", "")).strip()
-        except Exception: return ""
 
     def _sales_path():
         return SALES_FILE or os.path.join(app.root_path, "data", "sales.xlsx")
@@ -355,28 +336,24 @@ def register(A):
     def _outlet_resolver():
         """Map any spelling of an outlet (name / code from the sales file) to the shop name used by the rest of the app."""
         alias = {}
-        try:                                                    # optional hand-made data/outlet_aliases.json: {"name in sales file": "shop name in app"}
-            with open(os.path.join(app.root_path, "data", "outlet_aliases.json"), encoding="utf-8-sig") as f:
-                for k, v in json.load(f).items(): alias[_okey(k)] = str(v).strip()
-        except Exception: pass
         try:
             mp = A.load_mapping(False)
             for _, r in mp.iterrows():
                 nm = str(r.get("Store Name", "")).strip()
                 for key in (nm, str(r.get("Store Code", "")).strip()):
-                    if key: alias.setdefault(_okey(key), nm)
+                    if key: alias.setdefault(_canon(key), nm)
         except Exception: pass
         try:
-            for nm in A.load_stock(False, copy=False)["Store Name"].astype(str).str.strip().unique(): alias.setdefault(_okey(nm), nm)
+            for nm in A.load_stock(False, copy=False)["Store Name"].astype(str).str.strip().unique(): alias.setdefault(_canon(nm), nm)
         except Exception: pass
         try:
             with open(os.path.join(app.root_path, "data", "shops.json"), encoding="utf-8-sig") as f:
                 for s in json.load(f).get("shops", []):
                     nm = str(s.get("name", "")).strip()
                     for key in (nm, str(s.get("code", "")).strip()):
-                        if key: alias.setdefault(_okey(key), nm)
+                        if key: alias.setdefault(_canon(key), nm)
         except Exception: pass
-        return lambda x: alias.get(_okey(x), str(x).strip())
+        return lambda x: alias.get(_canon(x), str(x).strip())
 
     def _parse_sales(xls_bytes):
         resolve = _outlet_resolver(); report = {"sheets": [], "unmatched_outlets": [], "warnings": []}
@@ -428,12 +405,12 @@ def register(A):
         """Parsed sales workbook (cached). Source: SALES_EXCEL_URL if set, else the file an admin uploaded (data/sales.xlsx)."""
         with _sales["lock"]:
             path = _sales_path(); have_file = os.path.exists(path)
-            url = _sales_url(); sig = ("url", url) if url else (("file", os.path.getmtime(path)) if have_file else None)
+            sig = ("url", SALES_EXCEL_URL) if SALES_EXCEL_URL else (("file", os.path.getmtime(path)) if have_file else None)
             if sig is None: raise RuntimeError("No sales workbook yet. Ask the admin to upload it (Admin → Sales data) or set SALES_EXCEL_URL.")
             fresh = _sales["data"] is not None and _sales["sig"] == sig and time.time() - _sales["ts"] < SALES_CACHE_SECONDS
             if fresh and not force: return _sales["data"]
-            raw = A.load_from_url(url) if url else open(path, "rb").read()
-            data = _parse_sales(raw); data["source"] = "Linked Excel (SharePoint)" if url else "Uploaded workbook"
+            raw = A.load_from_url(SALES_EXCEL_URL) if SALES_EXCEL_URL else open(path, "rb").read()
+            data = _parse_sales(raw); data["source"] = "Linked Excel" if SALES_EXCEL_URL else "Uploaded workbook"
             _sales.update(sig=sig, ts=time.time(), data=data)
             return data
 
@@ -490,7 +467,7 @@ def register(A):
             if days and totals["pending"] > 0: totals["required_per_day"] = totals["pending"] / max(days["days_left"], 1)
             if days and days["days_elapsed"] and aa > 0: totals["projected"] = aa / days["days_elapsed"] * days["days_in_month"]
             return jsonify({"ok": True, "periods": data["periods"], "period": period, "unit": data["unit"], "source": data["source"], "scope_all": scope is None, "outlets": outlets,
-                            "totals": totals, "days": days, "has_targets": bool(len(data["T"]) and data["T"]["target"].sum() > 0), "as_of": datetime.fromtimestamp(_sales["ts"], timezone.utc).isoformat()})
+                            "totals": totals, "days": days, "as_of": datetime.fromtimestamp(_sales["ts"], timezone.utc).isoformat()})
         except Exception as e:
             return A._fail(e)
 
@@ -557,26 +534,6 @@ def register(A):
                             "note": "Set SALES_EXCEL_URL instead if your server disk is wiped on every deploy." if True else ""})
         except Exception as e:
             return A._fail(e)
-
-    @app.route("/api/admin/sales-link", methods=["GET", "POST"])
-    def sales_link():
-        if not A._admin_required(): return jsonify({"ok": False, "error": "Admin access required."}), 403
-        if request.method == "GET":
-            return jsonify({"ok": True, "url": _sales_url(), "from_env": bool(SALES_EXCEL_URL)})
-        if SALES_EXCEL_URL: return jsonify({"ok": False, "error": "SALES_EXCEL_URL is set on the server and overrides this."}), 400
-        url = str((request.get_json(silent=True) or {}).get("url", "")).strip()
-        try:
-            if url:
-                if not re.match(r"^https://", url): return jsonify({"ok": False, "error": "Paste the full https:// link."}), 400
-                parsed = _parse_sales(A.load_from_url(url))                                  # prove it downloads and reads before saving
-                if not len(parsed["T"]) and not len(parsed["S"]): return jsonify({"ok": False, "error": "The link opened, but no sales columns were recognised.", "report": parsed["report"]}), 400
-            os.makedirs(os.path.dirname(_link_file()), exist_ok=True)
-            with open(_link_file(), "w", encoding="utf-8") as f: json.dump({"url": url}, f)
-            _sales.update(sig=None, ts=0.0, data=None)
-            return jsonify({"ok": True, "message": "Link saved." if url else "Link removed.", "report": parsed["report"] if url else None,
-                            "target_rows": int(len(parsed["T"])) if url else 0, "sku_rows": int(len(parsed["S"])) if url else 0})
-        except Exception as e:
-            return jsonify({"ok": False, "error": "Could not open that link: " + str(e) + " (make sure it is shared as 'Anyone with the link can view')."}), 400
 
     @app.get("/api/admin/sales-status")
     def sales_status():

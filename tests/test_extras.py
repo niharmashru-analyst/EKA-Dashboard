@@ -86,15 +86,3 @@ def test_sales_upload_scoping_and_sku_stock(env):
     assert rows["8901234567890"]["sales_qty"] == 4 and rows["8901234567890"]["stock"] == 10
     assert rows["8901234567891"]["status"] == "out"                                  # sells nothing, stock 0, L3M 20
     assert login(env, "u@x.com", ["stock_entry"]).get("/api/sales/summary").status_code in (302, 401, 403)
-
-
-def test_outlet_name_matching():
-    k = extras._okey
-    assert k("RENEE - AHMEDABAD EBO") == k("Ahmedabad EBO") and k("Delhi T2") == k("Delhi T-2") and k("RENEE - ERODE KIOSK") == k("Erode")
-    assert k("ZED - PUNE EBO") != k("Pune EBO") and k("RENEE - AHMEDABAD KIOSK") != k("Ahmedabad EBO")
-
-
-def test_sales_link_requires_admin_and_https(env):
-    assert login(env, "u@x.com", ["sales"]).get("/api/admin/sales-link").status_code == 403
-    a = login(env, "a@x.com", ["admin"], True)
-    assert a.post("/api/admin/sales-link", json={"url": "http://x"}).status_code == 400

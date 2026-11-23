@@ -1,30 +1,11 @@
-# Stock Entry update
+# Stock Entry update (numeric qty, 15-min timer, drafts, keyboard fix)
 
-Files changed: `static/entry.js`, `static/dashboard.css` (appended), `templates/entry.html`, `app.py` (new endpoints + submit check), `.env.example`, tests.
+Files changed: `static/entry.js`, `static/dashboard.css` (appended at the end), `templates/entry.html` (draft banner). No backend change.
 
-## What the user sees
-- **Numeric-only qty** (digits only, no letters/`.`/`-`/`e`; empty = 0; Enter/"Next" jumps to the next box).
-- **15-minute timer** from opening the SKU list. At 3:00 left an amber prompt asks them to Save Draft. At 0:00 the draft is saved and a dialog offers "Keep counting (+15 min)" / "Finish later". The clock is kept by the **server**, so reloading the page or changing phone does not reset it, and it cannot be cheated by the phone clock.
-- **Draft + auto-save** on the device (0.6 s after each keystroke) **and on the server** (a few seconds later). Opening the same shop restores the newest copy, even after cleared app data or on another phone. The draft is deleted only after a successful submit (or Discard). Header shows "Draft auto-saved • time • synced".
-- **Search keyboard fix**: the search box is never rebuilt while typing, so the keyboard stays open. `123 / ABC` button switches pad/keyboard without closing it.
-- **Review before submit**: totals, every entered SKU, warnings for quantities >= 500 (`BIG_QTY`) or Tester higher than Stock, count of SKUs left blank (with "Show them"). Tap a row to go back and fix it. Every Submit button goes through this screen.
-- **Offline-safe submit**: if the connection drops, the entry is kept on the phone (banner "Waiting to send"), and sent automatically when online (also "Send now"). A retry can never double-count (the server ignores a repeated entry number).
-- **Camera barcode scan** (📷 Scan): jumps to the SKU and focuses its Stock box; a leading-zero difference (UPC-A vs EAN-13) still matches; a code that is only in SKU Master is added; unknown codes are reported. Manual EAN box as fallback.
-- **Stable order**: rows stay in catalogue order while counting (no jumping). "Order: Catalogue / Highest total" toggle is opt-in. **Next uncounted ↓** continues after the SKU last worked on. All / Entered / Not entered chips.
-- Sign-out pushes the latest draft, then removes device copies the server already holds (shared phones).
-- Larger, more readable small print on phones; sticky session bar; set-up panels hidden while counting.
-- System stock is intentionally NOT shown anywhere on this screen.
+- **Quantity boxes are numeric-only.** `type="text" inputmode="numeric" pattern="[0-9]*"`; anything that is not a digit (letters, `.`, `-`, `e`, pasted text) is stripped as it is typed, leading zeros removed, max 6 digits. Empty box = 0 (placeholder "0"); tapping a box selects its value so typing overwrites it. Enter / the keyboard's "Next" key jumps Stock -> Tester -> next SKU.
+- **15-minute timer** starts when the SKU list opens (and restarts after a successful submit). At 3:00 left an amber prompt asks the user to Save Draft. At 0:00 the draft is auto-saved and a dialog offers: Keep counting (+15 min) / Submit now / Finish later. Counts use the system clock, so they stay correct if the phone sleeps or the tab is in the background.
+- **Drafts + auto-save.** Quantities (and SKUs added from Master) are saved on the device (localStorage) 0.6 s after each keystroke, every 10 s, when the tab is hidden/closed, and when leaving the screen. Key = signed-in email + shop. Coming back to the same shop shows "Saved draft found - Resume Draft", and the quantities are restored. The draft is deleted only after a successful final submit (or via Discard). Drafts older than 72 h are ignored. A "Save Draft" button gives a manual save with confirmation.
+- **Search keyboard fix.** The cause was that every keystroke rebuilt the whole screen, destroying the search input, so Android closed the keyboard and dropped the numeric layout. The screen is now built once; only the SKU list refreshes while typing, so the input and keyboard stay put. A small `123 / ABC` button beside the search box switches between the number pad and the normal keyboard without closing it (choice is remembered).
+- **UI:** sticky session bar (store, progress, timer, Save Draft, Submit, auto-save status, time-left bar); set-up panels are hidden once counting starts so the SKU list is at the top; All / Entered / Not entered filter chips; larger 16px+ inputs (stops iOS zoom); highlighted rows once a quantity is entered; after "Add SKU from Master" the picker closes and the new SKU's Stock box is focused.
 
-## Server (app.py)
-- `GET/PUT/DELETE /api/draft` — per signed-in email + shop; checks the shop is mapped to that email; numbers sanitised/clamped; an older device cannot overwrite a newer draft.
-- `POST /api/entry-session` (`start` keeps a running session, `extend` restarts it) — server-side 15-min clock.
-- `POST /api/submit` returns `409 {code:"session_expired"}` when the session ran out (+60 s grace) unless extended; admins are exempt; a submit with no session record still works. A successful submit deletes that shop's draft and session.
-- Settings (env): `ENTRY_SESSION_SECONDS=900`, `ENTRY_SESSION_GRACE_SECONDS=60`, `ENTRY_SESSION_ENFORCE=1` (set 0 to make the timer advisory only).
-- **Important:** drafts live in the same SQLite file as `DATABASE_PATH`. If the host disk is ephemeral (e.g. Render free tier) point `DATABASE_PATH` to a persistent disk, otherwise server drafts reset on redeploy (the phone keeps its own copy as a fallback).
-
-## Not changed / not possible from the data
-- Brand/category filters: the SKU data has no brand or category column, so there is nothing to filter on.
-- Camera scanning needs the camera permission. In the Android APK the native app must allow camera access for the web view; if it does not, the scanner shows a message and the typed-EAN box still works. Not testable in the headless test browser (no camera).
-
-## Tests
-`pytest tests/` — backend (drafts, timer, enforcement) and `tests/test_entry_e2e.py` (browser: keyboard focus, numeric qty, review, offline queue, server-draft restore, stable order, scan, next-uncounted, timer enforcement, sign-out). The e2e file is skipped automatically if Playwright is not installed.
+Drafts live in the browser/app on that device (they do not follow a user to a different phone). Changing `SESSION_SECONDS` / `WARN_SECONDS` at the top of the draft/timer block in `entry.js` adjusts the timer.

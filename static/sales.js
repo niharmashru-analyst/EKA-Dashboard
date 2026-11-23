@@ -18,14 +18,13 @@ function load(refresh){
     $("period").value=d.period;
     var keep=$("outlet").value; $("outlet").innerHTML=(d.scope_all||d.outlets.length>1?'<option value="__all__">'+(d.scope_all?"All outlets":"All my outlets")+'</option>':"")+d.outlets.map(function(o){return '<option>'+esc(o.outlet)+'</option>'}).join("");
     if(keep&&[].some.call($("outlet").options,function(o){return o.value===keep}))$("outlet").value=keep; else if(d.outlets.length===1)$("outlet").value=d.outlets[0].outlet;
-    $("outW").style.display=d.outlets.length>1?"":"none"; $("period").parentNode.style.display=d.periods.length?"":"none";
-    msg(d.has_targets?"":"Targets are not loaded yet — the Target sheet is empty. Showing sales only; add Name + Target rows to see Target vs Achievement and pending.","good");
+    $("outW").style.display=d.outlets.length>1?"":"none";
     $("meta").textContent="Source: "+d.source+" • updated "+new Date(d.as_of).toLocaleString();
     draw(); loadSku();
   }).catch(function(){msg("Network problem — please try again.")})}
 function draw(){
   var d=S.data,t=d.totals,o=d.outlets,sel=$("outlet").value, one=sel&&sel!=="__all__"?o.filter(function(x){return x.outlet===sel})[0]:null, tt=one||t;
-  var pct=tt.pct, items=[["Target",d.has_targets?money(tt.target):"—",d.period||""],[d.has_targets?"Achieved":"Sales",money(tt.achievement),""],["Pending",d.has_targets?money(tt.pending):"—",tt.pending>0?"to reach target":"Target met 🎉"],["Achievement",pct==null?"—":n(pct,1)+"%","",pctColor(pct)]];
+  var pct=tt.pct, items=[["Target",money(tt.target),d.period],["Achieved",money(tt.achievement),""],["Pending",money(tt.pending),tt.pending>0?"to reach target":"Target met 🎉"],["Achievement",pct==null?"—":n(pct,1)+"%","",pctColor(pct)]];
   if(!one&&t.required_per_day)items.push(["Needed per day",short(t.required_per_day),d.days.days_left+" days left"]);
   if(!one&&t.projected)items.push(["Projected",short(t.projected),"at current pace"]);
   if(one&&one.rank)items.push(["Rank",one.rank+" / "+o.filter(function(x){return x.pct!=null}).length,""]);
