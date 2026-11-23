@@ -768,6 +768,9 @@ def db_init():
             if "entry_no" not in cols:
                 con.execute("ALTER TABLE submissions ADD COLUMN entry_no TEXT DEFAULT '' ")
             con.execute("CREATE INDEX IF NOT EXISTS idx_sub_store ON submissions(store_name)")
+            # Field-entry drafts (so a count survives a phone change / cleared app data) and the server-side 15-minute timer.
+            con.execute("CREATE TABLE IF NOT EXISTS entry_drafts(email TEXT NOT NULL, store_name TEXT NOT NULL, payload TEXT NOT NULL, saved_at INTEGER NOT NULL, PRIMARY KEY(email, store_name))")
+            con.execute("CREATE TABLE IF NOT EXISTS entry_sessions(email TEXT NOT NULL, store_name TEXT NOT NULL, started_at REAL NOT NULL, deadline REAL NOT NULL, PRIMARY KEY(email, store_name))")
         _db_ready = True
 
 
@@ -1118,7 +1121,7 @@ def _enforce_identity(email):
 
 def _access_destinations():
     if session.get("is_admin"):
-        return ["stock_entry", "dashboard", "admin"]
+        return ["stock_entry", "dashboard", "admin", "sales", "reports"]
     return list(session.get("access", []) or [])
 
 @app.get("/login")
@@ -1129,10 +1132,9 @@ def login_page():
 
 def _destination_for_access():
     access = _access_destinations()
-    if "dashboard" in access and len(access) == 1:
-        return "/"
-    if "stock_entry" in access and len(access) == 1:
-        return "/entry"
+    single = {"dashboard": "/", "stock_entry": "/entry", "sales": "/sales", "reports": "/reports"}
+    if len(access) == 1 and access[0] in single:
+        return single[access[0]]
     return "/choose"
 
 @app.post("/login")
@@ -1148,7 +1150,7 @@ def login():
         session["user_email"] = email
         session["user_name"] = "Admin"
         session["is_admin"] = True
-        session["access"] = ["stock_entry", "dashboard", "admin"]
+        session["access"] = ["stock_entry", "dashboard", "admin", "sales", "reports"]
         return jsonify({"ok": True, "redirect": "/choose"})
 
     rec = _user_record(email)
@@ -1163,11 +1165,11 @@ def login():
     if isinstance(access, str):
         access = [access]
     access = [str(x).strip().lower() for x in access if str(x).strip()]
-    valid = {"stock_entry", "dashboard", "admin"}
+    valid = {"stock_entry", "dashboard", "admin", "sales", "reports"}
     access = [x for x in access if x in valid]
     is_record_admin = "admin" in access
     if is_record_admin:
-        access = ["stock_entry", "dashboard", "admin"]
+        access = ["stock_entry", "dashboard", "admin", "sales", "reports"]
     if not access:
         return jsonify({"ok": False, "error": "Your account has no active access assigned."}), 403
 
@@ -1632,8 +1634,8 @@ def admin_user_save():
         status=str(p.get("status","Active") or "Active").strip(); role=str(p.get("role","") or "").strip()
         access=p.get("access",[]) or []
         if isinstance(access,str): access=[access]
-        access=[str(x).strip().lower() for x in access if str(x).strip() in {"stock_entry","dashboard","admin"}]
-        if "admin" in access: access=["stock_entry","dashboard","admin"]
+        access=[str(x).strip().lower() for x in access if str(x).strip() in {"stock_entry","dashboard","admin","sales","reports"}]
+        if "admin" in access: access=["stock_entry", "dashboard", "admin", "sales", "reports"]
         if not email or "@" not in email: return jsonify({"ok":False,"error":"Enter a valid email address."}),400
         if not name: return jsonify({"ok":False,"error":"Name is required."}),400
         payload=_load_users_config(); users=payload.get("users",{}) if isinstance(payload,dict) else {}
@@ -1888,6 +1890,8 @@ def admin():
     access_counts = {
         "stock_entry": sum(1 for r in users if "stock_entry" in r["access"]),
         "dashboard": sum(1 for r in users if "dashboard" in r["access"]),
+        "sales": sum(1 for r in users if "sales" in r["access"]),
+        "reports": sum(1 for r in users if "reports" in r["access"]),
         "admin": admin_users,
     }
 
@@ -2143,11 +2147,126 @@ def entry_meta():
             store_stock=stock[stock["Store Name"].astype(str).str.strip()==store].copy()
             store_stock["Stock"]=pd.to_numeric(store_stock.get("Stock",0),errors="coerce").fillna(0)
             available=(store_stock.groupby(["EAN Code","Product Name"],as_index=False)["Stock"].sum().rename(columns={"Stock":"Current Stock"}).to_dict(orient="records"))
-            master_skus=master[["EAN Code","Product Name"]].to_dict(orient="records")
+            if request.args.get("master")!="0": master_skus=master[["EAN Code","Product Name"]].to_dict(orient="records")   # master=0: client reads /api/master-skus.json instead
 
         return jsonify({"ok":True,"stores":stores,"selected_store":store,"available_skus":available,"master_skus":master_skus,"mapping_source":_cache.get("map_source",""),"mapped_email":email})
     except Exception as e:
         return jsonify({"ok":False,"error":str(e)}),500
+
+# ---------------------------------------------------------------------------
+# Field-entry drafts + server-side session timer
+# ---------------------------------------------------------------------------
+ENTRY_SESSION_SECONDS = int(os.getenv("ENTRY_SESSION_SECONDS", "900"))        # 15 minutes
+ENTRY_SESSION_GRACE = int(os.getenv("ENTRY_SESSION_GRACE_SECONDS", "60"))     # tolerance for slow networks at the buzzer
+ENTRY_SESSION_ENFORCE = os.getenv("ENTRY_SESSION_ENFORCE", "1").strip().lower() not in {"0", "false", "no", "off"}
+DRAFT_MAX_ITEMS = 6000
+DRAFT_TTL_SECONDS = 72 * 3600
+
+
+def _entry_scope(payload_or_args):
+    """(email, store) after identity + shop-mapping checks, or (None, error-response)."""
+    email = str(payload_or_args.get("email", "")).strip().lower()
+    store = str(payload_or_args.get("store_name") or payload_or_args.get("store") or "").strip()
+    if not email or not store:
+        return None, (jsonify({"ok": False, "error": "Email and shop are required."}), 400)
+    if not _enforce_identity(email):
+        return None, (jsonify({"ok": False, "error": "The submitted email does not match the signed-in account."}), 403)
+    if not session.get("is_admin"):
+        mp = load_mapping(False)
+        if store not in set(mp.loc[mp["Email ID"] == email, "Store Name"]):
+            return None, (jsonify({"ok": False, "error": "This email is not mapped to the selected shop."}), 403)
+    return (email, store), None
+
+
+def _clean_draft_items(items):
+    out = []
+    for it in (items or [])[:DRAFT_MAX_ITEMS]:
+        if not isinstance(it, dict): continue
+        ean = str(it.get("e", "")).strip()[:40]
+        if not ean: continue
+        try:
+            st = max(0, min(999999, int(float(it.get("s", 0) or 0)))); te = max(0, min(999999, int(float(it.get("t", 0) or 0))))
+        except (TypeError, ValueError):
+            continue
+        out.append({"e": ean, "n": str(it.get("n", ""))[:200], "s": st, "t": te, "a": 1 if it.get("a") else 0})
+    return out
+
+
+def _session_row(con, email, store):
+    return con.execute("SELECT started_at, deadline FROM entry_sessions WHERE email=? AND store_name=?", (email, store)).fetchone()
+
+
+def _clear_entry_state(email, store):
+    db_init()
+    with _db_lock, _db() as con:
+        con.execute("DELETE FROM entry_drafts WHERE email=? AND store_name=?", (email, store))
+        con.execute("DELETE FROM entry_sessions WHERE email=? AND store_name=?", (email, store))
+
+
+@app.route("/api/draft", methods=["GET", "PUT", "DELETE"])
+@require_access("stock_entry")
+def entry_draft():
+    try:
+        args = request.args if request.method in ("GET", "DELETE") else (request.get_json(silent=True) or {})
+        scope, err = _entry_scope(args)
+        if err: return err
+        email, store = scope
+        db_init(); now_ms = int(time.time() * 1000)
+        if request.method == "GET":
+            with _db() as con:
+                row = con.execute("SELECT payload, saved_at FROM entry_drafts WHERE email=? AND store_name=?", (email, store)).fetchone()
+            if row and now_ms - int(row[1]) > DRAFT_TTL_SECONDS * 1000:
+                _clear_entry_state(email, store); row = None
+            if not row: return jsonify({"ok": True, "draft": None, "server_time": now_ms})
+            d = json.loads(row[0]); d["saved_at"] = int(row[1])
+            return jsonify({"ok": True, "draft": d, "server_time": now_ms})
+        if request.method == "DELETE":
+            with _db_lock, _db() as con:
+                con.execute("DELETE FROM entry_drafts WHERE email=? AND store_name=?", (email, store))
+            return jsonify({"ok": True})
+        items = _clean_draft_items(args.get("items"))
+        if not items:
+            with _db_lock, _db() as con:
+                con.execute("DELETE FROM entry_drafts WHERE email=? AND store_name=?", (email, store))
+            return jsonify({"ok": True, "saved_at": None, "server_time": now_ms})
+        try: client_ms = int(args.get("saved_at") or now_ms)
+        except (TypeError, ValueError): client_ms = now_ms
+        saved_at = min(client_ms, now_ms + 60_000)               # never trust a clock that is in the future
+        body = json.dumps({"entry_no": str(args.get("entry_no", ""))[:60], "items": items}, separators=(",", ":"))
+        with _db_lock, _db() as con:
+            # Last write wins, but an older tab/device must not overwrite a newer draft.
+            cur = con.execute("SELECT saved_at FROM entry_drafts WHERE email=? AND store_name=?", (email, store)).fetchone()
+            if cur and int(cur[0]) > saved_at:
+                return jsonify({"ok": True, "saved_at": int(cur[0]), "stale": True, "server_time": now_ms})
+            con.execute("INSERT OR REPLACE INTO entry_drafts(email, store_name, payload, saved_at) VALUES(?,?,?,?)", (email, store, body, saved_at))
+        return jsonify({"ok": True, "saved_at": saved_at, "server_time": now_ms})
+    except Exception as e:
+        return _fail(e)
+
+
+@app.post("/api/entry-session")
+@require_access("stock_entry")
+def entry_session():
+    """Server-side 15-minute timer. action=start keeps a still-running session (so a reload does not reset it);
+    action=extend always restarts the clock."""
+    try:
+        p = request.get_json(silent=True) or {}
+        scope, err = _entry_scope(p)
+        if err: return err
+        email, store = scope
+        action = str(p.get("action", "start")).strip().lower()
+        db_init(); now = time.time()
+        with _db_lock, _db() as con:
+            row = _session_row(con, email, store)
+            if action == "extend" or not row or row[1] < now:
+                deadline = now + ENTRY_SESSION_SECONDS
+                con.execute("INSERT OR REPLACE INTO entry_sessions(email, store_name, started_at, deadline) VALUES(?,?,?,?)", (email, store, now, deadline))
+            else:
+                deadline = row[1]
+        return jsonify({"ok": True, "seconds_left": max(0, int(deadline - now)), "total_seconds": ENTRY_SESSION_SECONDS, "enforced": ENTRY_SESSION_ENFORCE, "server_time": int(now * 1000)})
+    except Exception as e:
+        return _fail(e)
+
 
 def _num(v, default=0.0):
     """Quantity parser: '12', 12.0, '' -> number; garbage / NaN / inf -> ValueError (HTTP 400, not 500)."""
@@ -2167,6 +2286,11 @@ def submit():
         payload=request.get_json(silent=True) or {}; email=str(payload.get("email","")).strip().lower(); store=str(payload.get("store_name","")).strip(); rows=payload.get("rows",[])
         if not _enforce_identity(email): return jsonify({"ok":False,"error":"The submitted email does not match the signed-in account."}),403
         if not email or not store or not isinstance(rows,list) or not rows: return jsonify({"ok":False,"error":"Email, shop and at least one SKU are required."}),400
+        if ENTRY_SESSION_ENFORCE and not session.get("is_admin"):
+            db_init()
+            with _db() as _con: _sess=_session_row(_con,email,store)
+            if _sess and time.time() > _sess[1] + ENTRY_SESSION_GRACE:
+                return jsonify({"ok":False,"code":"session_expired","error":"Your 15-minute entry session has ended. Tap 'Keep counting' to continue — your counts are saved."}),409
         if len(rows)>MAX_SUBMIT_ROWS: return jsonify({"ok":False,"error":f"Too many rows (maximum {MAX_SUBMIT_ROWS})."}),400
         mp,master=load_entry_sources(False)
         allowed=set(mp.loc[mp["Email ID"]==email,"Store Name"])
@@ -2196,6 +2320,7 @@ def submit():
         entry_no=str(payload.get("entry_no", "")).strip() or ("STK-" + datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(2).upper())
         if entry_already_saved(entry_no):
             # The browser retried (slow network / double tap). The first copy is already stored.
+            _clear_entry_state(email,store)
             return jsonify({"ok":True,"message":"Stock was already submitted.","saved_rows":len(cleaned),"entry_no":entry_no,"duplicate":True})
         actor=str(session.get("user_email") or email).strip().lower()
         payload={"entry_no":entry_no,"email":email,"store_name":store,"rows":cleaned,"submitted_by":actor,"issued_by":actor,"audit_id":"AUD-"+datetime.now().strftime("%Y%m%d-%H%M%S")+"-"+secrets.token_hex(4).upper(),"client_ip":request.headers.get("X-Forwarded-For",request.remote_addr or "").split(",")[0].strip(),"user_agent":request.headers.get("User-Agent","")[:500],"submission_mode":"field_entry"}
@@ -2206,10 +2331,10 @@ def submit():
             saved=int(result.get("saved_rows",len(cleaned)) or 0)
             if saved != len(cleaned):
                 return jsonify({"ok":False,"error":f"Submission mismatch: sent {len(cleaned)} rows but Apps Script saved {saved}.","remote":result}),502
-            remember_submission(entry_no,email,store,cleaned)
+            remember_submission(entry_no,email,store,cleaned); _clear_entry_state(email,store)
             return jsonify({"ok":True,"message":"Stock submitted successfully.","saved_rows":saved,"entry_no":entry_no,"remote":result})
         saved=save_local_submission(payload)
-        remember_submission(entry_no,email,store,cleaned)
+        remember_submission(entry_no,email,store,cleaned); _clear_entry_state(email,store)
         return jsonify({"ok":True,"message":"Stock submitted successfully.","saved_rows":saved,"entry_no":entry_no})
     except Exception as e: return _fail(e)
 
@@ -2794,3 +2919,9 @@ def _warmup():
 
 if os.getenv("WARMUP", "1").strip().lower() not in {"0", "false", "no"} and not os.getenv("PYTEST_CURRENT_TEST"):
     threading.Thread(target=_warmup, daemon=True, name="warmup").start()
+
+
+# Master-SKU JSON feed, Stock Reports and Sales Dashboard live in extras.py
+import sys as _sys
+import extras as _extras
+_extras.register(_sys.modules[__name__])
