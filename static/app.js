@@ -63,7 +63,7 @@ function chart(id,opt,clickFn){
     calm.backgroundColor='transparent';
     calm.animationDuration=420;
     calm.animationDurationUpdate=260;
-    calm.textStyle={...(calm.textStyle||{}),fontFamily:'Manrope',color:'#d2d2d7'};
+    calm.textStyle={...(calm.textStyle||{}),fontFamily:Inter,color:'#d2d2d7'};
     calm.tooltip={
       ...(calm.tooltip||{}),
       backgroundColor:'#111214',
@@ -134,7 +134,7 @@ const palette=['#d7659b','#8f949d','#7186a6','#7c9d8a','#a77b83','#b2a4b5'];
 const base={
   color:palette,
   backgroundColor:'transparent',
-  textStyle:{fontFamily:'Manrope',color:'#d2d2d7'},
+  textStyle:{fontFamily:Inter,color:'#d2d2d7'},
   tooltip:{
     trigger:'axis',
     backgroundColor:'#111214',

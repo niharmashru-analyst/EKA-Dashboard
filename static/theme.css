@@ -1,0 +1,32 @@
+/* Theme support. The app is designed dark; the light theme re-colours the whole page by inverting it and
+   rotating the hue back, then un-inverting media so photos, the logo and the camera stay natural. */
+html[data-theme="light"]{filter:invert(1) hue-rotate(180deg);color-scheme:light}
+html[data-theme="light"] img,html[data-theme="light"] video,html[data-theme="light"] .keep-colors{filter:invert(1) hue-rotate(180deg)}
+html[data-theme="dark"]{color-scheme:dark}
+.theme-toggle{font:700 11px/1 Inter,Arial,sans-serif;letter-spacing:.02em;padding:8px 11px;border-radius:999px;border:1px solid #333;background:#141414;color:#f1f1f1;cursor:pointer;white-space:nowrap;min-height:34px}
+.theme-toggle:hover{border-color:#ff2b8a}
+.theme-toggle.in-side{display:block;margin:12px 14px 0;width:calc(100% - 28px);text-align:left}
+.theme-toggle.in-bar{margin-right:8px;flex:0 0 auto}
+.theme-toggle.floating{position:fixed;top:12px;right:12px;z-index:900}
+@media(max-width:700px){.theme-toggle{padding:7px 9px;font-size:10px}}
+
+/* One typeface everywhere (Inter, falling back to the device's UI font). */
+:root{--eka-font:Inter,system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;--font-display:var(--eka-font);--font-body:var(--eka-font)}
+html body,html body button,html body input,html body select,html body textarea{font-family:var(--eka-font)}
+html body h1,html body h2,html body h3,html body .brand-name,html body .k-value{font-family:var(--eka-font)!important;letter-spacing:-.01em}
+
+/* Accessibility & polish */
+:focus-visible{outline:2px solid #ff2b8a;outline-offset:2px;border-radius:6px}
+button,.btn,a.nav,select,input{touch-action:manipulation}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
+::selection{background:rgba(255,43,138,.35)}
+html{-webkit-text-size-adjust:100%}
+
+/* Mobile top bar: [menu] [logo] [change section] without overlap; menu icon drawn (no font dependence) */
+.menu-toggle{font-size:0!important;background-repeat:no-repeat!important;background-position:center!important;background-size:18px 18px!important;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='2.4' stroke-linecap='round'><path d='M4 7h16M4 12h16M4 17h16'/></svg>")!important}
+@media(max-width:700px){
+  .entry-mobilebar{display:grid!important;grid-template-columns:38px 1fr auto;gap:10px;justify-content:stretch!important}
+  .entry-mobilebar .menu-toggle{position:static!important;display:block}
+  .entry-mobilebar .renee-mobile-logo{justify-self:start;margin-left:2px}
+}
