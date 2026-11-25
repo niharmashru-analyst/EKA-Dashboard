@@ -1,0 +1,13 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>RENEE • Stock Reports</title><link rel="stylesheet" href="/static/dashboard.css?v={{ asset_v('dashboard.css') }}"><link rel="stylesheet" href="/static/extras.css?v={{ asset_v('extras.css') }}"><link rel="stylesheet" href="/static/theme.css?v={{ asset_v('theme.css') }}"><script src="/static/theme.js?v={{ asset_v('theme.js') }}"></script></head>
+<body><div class="xw">
+<div class="xw-top"><h1>Stock Reports</h1><a class="btn secondary" href="/choose">← Workspaces</a><a class="btn secondary" href="/logout">Sign out</a></div>
+<p class="muted" style="margin:0 0 14px">Download the stock punched by field users. Choose outlets, a date range or a single submission.</p>
+<div class="xc"><h2>1 · What do you want?</h2><div class="seg2" id="mode"><button data-m="range" class="on">Outlets &amp; dates</button><button data-m="latest">Latest entry per outlet</button><button data-m="entry">One submission</button></div></div>
+<div id="secOutlets"><div class="xc"><h2>2 · Outlets</h2>
+<div class="xrow" style="margin-bottom:10px"><div><label class="l">Search</label><input type="search" id="oq" placeholder="Find outlet…"></div><div id="dates" class="xrow" style="grid-template-columns:1fr 1fr;grid-column:span 2"><div><label class="l">From</label><input type="date" id="dFrom"></div><div><label class="l">To</label><input type="date" id="dTo"></div></div></div>
+<div id="stale" class="xmsg" style="display:none;background:rgba(255,200,87,.1);color:#ffc857"></div><label class="orow" style="border:1px solid #232323;border-radius:12px;margin-bottom:8px"><input type="checkbox" id="all"><span class="nm">All outlets<small id="allSub"></small></span></label>
+<div class="olist" id="olist"><div class="empty2">Loading outlets…</div></div></div></div>
+<div id="secEntry" style="display:none"><div class="xc"><h2>2 · Pick a submission</h2><div class="xrow" style="margin-bottom:10px"><div><label class="l">Search entry no. / outlet / user</label><input type="search" id="eq" placeholder="e.g. STK-2026…"></div><div><label class="l">Outlet</label><select id="eStore"><option value="">All outlets</option></select></div></div><div class="olist" id="elist"><div class="empty2">Loading…</div></div></div></div>
+<div id="msg"></div>
+<div class="sticky-dl"><div class="info" id="info">Nothing selected.</div><label class="pill" id="splitW"><input type="checkbox" id="split" checked> One sheet per outlet</label><button class="btn secondary" id="dlCsv" disabled>Download CSV</button><button class="btn" id="dlXlsx" disabled>Download Excel</button></div>
+</div><script src="/static/reports.js?v={{ asset_v('reports.js') }}"></script></body></html>

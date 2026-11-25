@@ -1,0 +1,48 @@
+name: Build Android APK
+# Builds the CORMATE / E.K.A. Android app in the cloud and publishes it to static/downloads/EKA-Analytics-Android.apk,
+# so the website's "Android APK" button always serves the latest build. Runs on every push that changes the app,
+# or by hand: GitHub -> Actions -> "Build Android APK" -> Run workflow.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["app/**", "build.gradle", "settings.gradle", "gradle.properties", ".github/workflows/build-apk.yml"]
+permissions:
+  contents: write
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v5
+        with: { distribution: temurin, java-version: "17" }
+      - name: Accept licenses and install SDK 35 (the runner already has the Android SDK)
+        run: |
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          [ -x "$SDKM" ] || SDKM=$(ls "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager | head -1)
+          yes | "$SDKM" --licenses >/dev/null || true
+          "$SDKM" "platforms;android-35" "build-tools;35.0.0" >/dev/null
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: "8.9" }
+      - name: Build release APK
+        run: |
+          rm -f gradle/gradle-daemon-jvm.properties
+          gradle --no-daemon :app:assembleRelease :app:assembleDebug
+      - name: Collect APK
+        run: |
+          # The website serves the DEBUG build (the one that installs fine on your phones, same kind Android Studio makes).
+          DBG=$(ls app/build/outputs/apk/debug/*.apk | head -1)
+          mkdir -p static/downloads out
+          cp "$DBG" static/downloads/EKA-Analytics-Android.apk
+          cp "$DBG" out/EKA-Analytics-Android-DEBUG.apk
+          REL=$(ls app/build/outputs/apk/release/*.apk | head -1); cp "$REL" out/EKA-Analytics-Android-RELEASE.apk
+          ls -la static/downloads
+      - uses: actions/upload-artifact@v4
+        with: { name: EKA-Analytics-Android, path: static/downloads/EKA-Analytics-Android.apk }
+      - uses: actions/upload-artifact@v4
+        with: { name: EKA-Analytics-Android-DEBUG, path: out/ }
+      - name: Commit APK to the repo (website download button)
+        run: |
+          git config user.name "apk-bot"; git config user.email "apk-bot@users.noreply.github.com"
+          git add static/downloads/EKA-Analytics-Android.apk
+          git diff --cached --quiet || (git commit -m "Update Android APK [skip ci]" && git pull --rebase --autostash origin main && git push)
