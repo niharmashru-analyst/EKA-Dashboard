@@ -27,17 +27,20 @@ jobs:
       - name: Build release APK
         run: |
           rm -f gradle/gradle-daemon-jvm.properties
-          gradle --no-daemon :app:assembleRelease
+          gradle --no-daemon :app:assembleRelease :app:assembleDebug
       - name: Collect APK
         run: |
           APK=$(ls app/build/outputs/apk/release/*.apk | head -1)
           mkdir -p static/downloads
           cp "$APK" static/downloads/EKA-Analytics-Android.apk
+          DBG=$(ls app/build/outputs/apk/debug/*.apk | head -1); mkdir -p out; cp "$DBG" out/EKA-Analytics-Android-DEBUG.apk   # same kind of build Android Studio makes
           ls -la static/downloads
       - uses: actions/upload-artifact@v4
         with: { name: EKA-Analytics-Android, path: static/downloads/EKA-Analytics-Android.apk }
+      - uses: actions/upload-artifact@v4
+        with: { name: EKA-Analytics-Android-DEBUG, path: out/EKA-Analytics-Android-DEBUG.apk }
       - name: Commit APK to the repo (website download button)
         run: |
           git config user.name "apk-bot"; git config user.email "apk-bot@users.noreply.github.com"
           git add static/downloads/EKA-Analytics-Android.apk
-          git diff --cached --quiet || (git commit -m "Update Android APK [skip ci]" && git pull --rebase origin main && git push)
+          git diff --cached --quiet || (git commit -m "Update Android APK [skip ci]" && git pull --rebase --autostash origin main && git push)
