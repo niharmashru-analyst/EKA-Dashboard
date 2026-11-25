@@ -1,0 +1,53 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.renee.analytics'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.renee.analytics'
+        minSdk 23
+        targetSdk 35
+        versionCode 2
+        versionName '1.1.0'
+    }
+
+    signingConfigs {
+        release {
+            // Fixed release key so every future APK installs as an update over the previous one.
+            storeFile file('../keystore/eka-release.jks')
+            storePassword 'eka-release-2026'
+            keyAlias 'eka'
+            keyPassword 'eka-release-2026'
+        }
+    }
+
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
+    }
+
+    buildTypes {
+        debug {
+            applicationIdSuffix '.debug'
+            versionNameSuffix '-debug'
+        }
+        release {
+            signingConfig signingConfigs.release
+            minifyEnabled false
+            shrinkResources false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation 'androidx.core:core:1.13.1'
+}

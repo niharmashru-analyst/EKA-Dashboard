@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">CORMATE</string>
+    <string name="loading_workspace">Loading your workspace...</string>
+    <string name="offline_title">No Internet Connection</string>
+    <string name="offline_message">Please check your connection and try again.</string>
+    <string name="retry">Retry</string>
+</resources>

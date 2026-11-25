@@ -1,0 +1,7 @@
+<resources>
+    <color name="cormate_black">#080808</color>
+    <color name="cormate_card">#111111</color>
+    <color name="cormate_white">#F7F7F7</color>
+    <color name="cormate_pink">#FF2B8A</color>
+    <color name="cormate_pink_light">#FF72B4</color>
+</resources>
