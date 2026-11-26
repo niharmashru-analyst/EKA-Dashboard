@@ -247,6 +247,15 @@
           "status": "Active"
         }
       ]
+    },
+    "mumbai.vashi@reneecosmetics.in": {
+      "shops": [
+        {
+          "code": "RENEE INORBIT MALL VASHI",
+          "name": "Inorbit Vashi EBO",
+          "status": "Active"
+        }
+      ]
     }
   }
 }

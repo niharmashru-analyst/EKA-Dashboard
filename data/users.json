@@ -44,7 +44,7 @@
     },
     "nagraj.londhe@reneecosmetics.in": {
       "name": "Nagraj Pandurang Londhe",
-      "password": "Nagr@2026",
+      "password": "Renee",
       "access": ["stock_entry"],
       "status": "Active"
     },
@@ -62,13 +62,13 @@
     },
     "muskangrover1471995@gmail.com": {
       "name": "Muskan Grover",
-      "password": "Musk@2026",
+      "password": "Renee",
       "access": ["stock_entry"],
       "status": "Active"
     },
     "julie.joksan@reneecosmetics.in": {
       "name": "Julie Mahendrabhai Joksan",
-      "password": "Juli@2026",
+      "password": "Renee",
       "access": ["stock_entry"],
       "status": "Active"
     },
@@ -175,6 +175,12 @@
       "status": "Active"
     },
     "ahmedabad.kiosk@reneecosmetics.in": {
+      "name": "",
+      "password": "Renee@2026",
+      "access": ["stock_entry"],
+      "status": "Active"
+    },
+    "mumbai.vashi@reneecosmetics.in": {
       "name": "",
       "password": "Renee@2026",
       "access": ["stock_entry"],
